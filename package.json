@@ -1,0 +1,16 @@
+{
+  "name": "freecell",
+  "version": "1.0.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rm -rf dist; cp -r web dist; cp -r src dist/app;workbox generateSW workbox-config.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "workbox-cli": "^4.3.1"
+  },
+  "dependencies": {}
+}
