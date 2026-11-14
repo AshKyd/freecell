@@ -35,11 +35,14 @@
     gap: 0.25rem;
   }
 
-  /* Buttons share the bar equally so three always fit on a narrow phone. */
+  /*
+   * Buttons are at least as wide as their label and grow to share any spare
+   * room, so they fill the bottom bar on a phone and size to content on desktop.
+   */
   button {
-    flex: 1 1 0;
-    min-width: 0;
-    padding: 0 0.5rem;
+    flex: 1 0 auto;
+    min-width: 5.5rem;
+    padding: 0 0.6rem;
   }
 
   svg {
