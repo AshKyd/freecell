@@ -1,5 +1,4 @@
 import type { BoardEvent, BoardHost } from '../board/boardHost.ts';
-import type { CardId } from '../engine/cards.ts';
 import { findBestDestination } from '../engine/autoMove.ts';
 import { randomGameNumber } from '../engine/deal.ts';
 import { type GameState, type MoveResult, applyMove, createGame, isStuck, isWon, moveCount, undoMove } from '../engine/game.ts';
@@ -17,23 +16,6 @@ export interface WinSummary {
   seconds: number;
   badges: Badge[];
 }
-
-/** Cards that changed pile, in move order, read from the piles before the moves were applied. */
-const cardsMovedBy = ({ piles, moves }: { piles: Piles; moves: Move[] }): CardId[] => {
-  const walk = moves.reduce(
-    ({ currentPiles, movedCards }, { from, to, count }) => {
-      const moving = currentPiles[from].slice(-count);
-      return {
-        currentPiles: currentPiles.map((pile, index) =>
-          index === from ? pile.slice(0, -count) : index === to ? [...pile, ...moving] : pile,
-        ),
-        movedCards: [...movedCards, ...moving],
-      };
-    },
-    { currentPiles: piles, movedCards: [] as CardId[] },
-  );
-  return walk.movedCards;
-};
 
 /**
  * The game being played and everything around it: timer, stats, saving,
@@ -155,10 +137,10 @@ export class GameSession implements BoardHost {
   }
 
   #commit({ state, appliedMoves }: MoveResult): void {
-    const movedCards = cardsMovedBy({ piles: this.game.piles, moves: appliedMoves });
+    const before = this.game.piles;
     this.game = state;
     this.#save();
-    this.#emit({ type: 'moves', movedCards });
+    this.#emit({ type: 'moves', before, steps: appliedMoves });
   }
 
   #recordWin(): void {

@@ -1,15 +1,27 @@
 import Phaser from 'phaser';
 import { CARD_COUNT, type CardId } from '../engine/cards.ts';
-import { HOME_CELL_PILES, type Move, PILE_COUNT, type Piles, isHomeCell } from '../engine/rules.ts';
+import { HOME_CELL_PILES, type Move, PILE_COUNT, type Piles, isHomeCell, movePiles } from '../engine/rules.ts';
 import type { BoardEvent, BoardHost } from './boardHost.ts';
 import { type BoardLayout, type Rect, cardPosition, computeBoardLayout, dropRect, overlapArea } from './boardLayout.ts';
 import type { FaceStyle } from './cardFace.ts';
 import { cardTextureKey, renderAllCards } from './cardTextures.ts';
 
 const MOVE_DURATION_MS = 170;
-/** Delay between cards when several move in one go (automatic moves, the opening deal). */
+/** Delay between cards when several move in one go (settling after a resize, the opening deal). */
 const STAGGER_MS = 45;
 const DEAL_STAGGER_MS = 12;
+/**
+ * Single-card steps of a move (a run going through the free cells, then
+ * automatic moves home) play one after another, this far apart, so the
+ * player can follow them. Each takes `STEP_DURATION_MS`, overlapping the next.
+ */
+const STEP_INTERVAL_MS = 110;
+const STEP_DURATION_MS = 160;
+/** Time to return dragged cards to their pile before the steps start. */
+const SETTLE_MS = 90;
+/** Picked-up cards grow by this much, from their centre, to look lifted. */
+const LIFT_SCALE = 1.06;
+const LIFT_DURATION_MS = 80;
 /** Cards in flight are drawn above everything at rest. */
 const FLYING_DEPTH = 1000;
 const HINT_DEPTH = 5000;
@@ -45,6 +57,8 @@ export class BoardScene extends Phaser.Scene {
   /** Size and face style of the card textures in use; undefined until the first set is ready. */
   #textureSet: { widthPx: number; heightPx: number; marginPx: number; style: FaceStyle } | undefined;
   #textureBuildId = 0;
+  /** Final tidy-up after a step-by-step move; cancelled if anything else moves the cards first. */
+  #stepsFinish: Phaser.Time.TimerEvent | undefined;
   #unsubscribe: (() => void) | undefined;
 
   constructor({ host, pixelRatio, reduceMotion }: { host: BoardHost; pixelRatio: number; reduceMotion: boolean }) {
@@ -149,9 +163,26 @@ export class BoardScene extends Phaser.Scene {
     const textureSet = this.#textureSet;
     if (!textureSet) return;
     const { widthPx, heightPx, marginPx } = textureSet;
-    sprite
-      .setOrigin(marginPx / (widthPx + marginPx * 2), marginPx / (heightPx + marginPx * 2))
-      .setScale(this.#layout.cardWidth / widthPx, this.#layout.cardHeight / heightPx);
+    const { scaleX, scaleY } = this.#cardScale();
+    sprite.setOrigin(marginPx / (widthPx + marginPx * 2), marginPx / (heightPx + marginPx * 2)).setScale(scaleX, scaleY);
+  }
+
+  /** Sprite scale that shows a card at layout size, times `lift` for a picked-up card. */
+  #cardScale(lift = 1): { scaleX: number; scaleY: number } {
+    const textureSet = this.#textureSet;
+    if (!textureSet) return { scaleX: lift, scaleY: lift };
+    return {
+      scaleX: (this.#layout.cardWidth / textureSet.widthPx) * lift,
+      scaleY: (this.#layout.cardHeight / textureSet.heightPx) * lift,
+    };
+  }
+
+  /** Shift that keeps a lifted card centred where it was. Sprites scale from their top-left corner. */
+  #liftOffset(): { x: number; y: number } {
+    return {
+      x: (this.#layout.cardWidth * (LIFT_SCALE - 1)) / 2,
+      y: (this.#layout.cardHeight * (LIFT_SCALE - 1)) / 2,
+    };
   }
 
   // ── Placing cards ──────────────────────────────────────────────────────
@@ -179,6 +210,9 @@ export class BoardScene extends Phaser.Scene {
     const piles = this.#host.getPiles();
     const { cardWidth, cardHeight } = this.#layout;
     const shouldAnimate = animate && !this.#reduceMotion;
+    const { scaleX, scaleY } = this.#cardScale();
+    this.#stepsFinish?.remove();
+    this.#stepsFinish = undefined;
 
     piles.forEach((cards, pile) =>
       cards.forEach((card, index) => {
@@ -187,13 +221,13 @@ export class BoardScene extends Phaser.Scene {
         const orderIndex = fromDeck ? index * 8 + pile : order.indexOf(card);
 
         this.tweens.killTweensOf(sprite);
-        this.#fitSpriteToCard(sprite);
         sprite.setAngle(0).setAlpha(1);
 
         if (fromDeck && shouldAnimate) sprite.setPosition(this.scale.width / 2 - cardWidth / 2, -cardHeight);
 
-        const needsToMove = sprite.x !== target.x || sprite.y !== target.y;
+        const needsToMove = sprite.x !== target.x || sprite.y !== target.y || sprite.scaleX !== scaleX;
         if (!shouldAnimate || !needsToMove) {
+          this.#fitSpriteToCard(sprite);
           sprite.setPosition(target.x, target.y).setDepth(index);
           return;
         }
@@ -203,6 +237,9 @@ export class BoardScene extends Phaser.Scene {
           targets: sprite,
           x: target.x,
           y: target.y,
+          // Also brings a lifted card back to its normal size.
+          scaleX,
+          scaleY,
           duration: MOVE_DURATION_MS,
           delay: Math.max(orderIndex, 0) * stagger,
           ease: 'Cubic.easeOut',
@@ -224,7 +261,7 @@ export class BoardScene extends Phaser.Scene {
       return;
     }
     if (event.type === 'moves') {
-      this.#placeCards({ animate: true, order: event.movedCards });
+      this.#animateSteps(event);
       return;
     }
     if (event.type === 'hint') {
@@ -236,6 +273,66 @@ export class BoardScene extends Phaser.Scene {
       return;
     }
     this.#celebrate();
+  }
+
+  /**
+   * Plays moves one card at a time, so a run can be seen passing through
+   * the free cells and the automatic moves home follow on.
+   *
+   * Each step's target comes from replaying the steps on the `before`
+   * piles. Cards that are out of place when it starts (a dragged run that
+   * was dropped) first go back to their pile. When the last step lands,
+   * `#placeCards` tidies up depths and any change in how columns fan.
+   */
+  #animateSteps({ before, steps }: { before: Piles; steps: Move[] }): void {
+    if (this.#reduceMotion || steps.length === 0) {
+      this.#placeCards({ animate: false });
+      return;
+    }
+    this.#stepsFinish?.remove();
+    const restScale = this.#cardScale();
+
+    // Settle cards that are not where `before` has them.
+    const outOfPlace = before.flatMap((cards, pile) =>
+      cards
+        .map((card, index) => ({ sprite: this.#sprites[card], target: cardPosition({ layout: this.#layout, pile, index, pileLength: cards.length }), index }))
+        .filter(({ sprite, target }) => sprite.x !== target.x || sprite.y !== target.y || sprite.scaleX !== restScale.scaleX),
+    );
+    outOfPlace.forEach(({ sprite, target }) => {
+      this.tweens.killTweensOf(sprite);
+      this.tweens.add({ targets: sprite, x: target.x, y: target.y, ...restScale, duration: SETTLE_MS, ease: 'Cubic.easeOut' });
+    });
+    const firstStepDelay = outOfPlace.length > 0 ? SETTLE_MS : 0;
+
+    // Then each step in turn.
+    const snapshots = steps.reduce<Piles[]>((list, move) => [...list, movePiles({ piles: list.at(-1) as Piles, move })], [before]);
+    steps.forEach((move, stepIndex) => {
+      const after = snapshots[stepIndex + 1];
+      const destination = after[move.to];
+      // Steps are single cards, but a save from before run moves were split may hold a longer one.
+      destination.slice(-move.count).forEach((card, offset) => {
+        const sprite = this.#sprites[card];
+        const index = destination.length - move.count + offset;
+        const target = cardPosition({ layout: this.#layout, pile: move.to, index, pileLength: destination.length });
+        this.tweens.add({
+          targets: sprite,
+          x: target.x,
+          y: target.y,
+          ...restScale,
+          delay: firstStepDelay + stepIndex * STEP_INTERVAL_MS,
+          duration: STEP_DURATION_MS,
+          ease: 'Cubic.easeInOut',
+          // Each step lands on top of the ones before it.
+          onStart: () => sprite.setDepth(FLYING_DEPTH + stepIndex * 2 + offset),
+        });
+      });
+    });
+
+    const totalMs = firstStepDelay + (steps.length - 1) * STEP_INTERVAL_MS + STEP_DURATION_MS;
+    this.#stepsFinish = this.time.delayedCall(totalMs, () => {
+      this.#stepsFinish = undefined;
+      this.#placeCards({ animate: true });
+    });
   }
 
   /** Outlines the cards to pick up and the place to put them, then fades out. */
@@ -355,6 +452,42 @@ export class BoardScene extends Phaser.Scene {
       grabOffsetY: position.y - pointer.y,
       isDragging: false,
     };
+    this.#lift(hit.pile, hit.index);
+  }
+
+  /** Raises the cards from `index` up in a pile: slightly bigger, drawn on top. */
+  #lift(pile: number, fromIndex: number): void {
+    const pileCards = this.#host.getPiles()[pile];
+    const liftedScale = this.#cardScale(LIFT_SCALE);
+    const offset = this.#liftOffset();
+
+    pileCards.slice(fromIndex).forEach((card, runOffset) => {
+      const sprite = this.#sprites[card];
+      const index = fromIndex + runOffset;
+      const rest = cardPosition({ layout: this.#layout, pile, index, pileLength: pileCards.length });
+      const lifted = { x: rest.x - offset.x, y: rest.y - offset.y, ...liftedScale };
+      this.tweens.killTweensOf(sprite);
+      sprite.setDepth(FLYING_DEPTH * 2 + runOffset);
+      if (this.#reduceMotion) {
+        sprite.setPosition(lifted.x, lifted.y).setScale(lifted.scaleX, lifted.scaleY);
+        return;
+      }
+      this.tweens.add({ targets: sprite, ...lifted, duration: LIFT_DURATION_MS, ease: 'Quad.easeOut' });
+    });
+  }
+
+  /** Puts lifted cards straight back, without animation. Used before a tap is acted on. */
+  #dropLift(cards: CardId[]): void {
+    const piles = this.#host.getPiles();
+    cards.forEach((card) => {
+      const location = this.#locate(card, piles);
+      if (!location) return;
+      const sprite = this.#sprites[card];
+      const rest = cardPosition({ layout: this.#layout, ...location, pileLength: piles[location.pile].length });
+      this.tweens.killTweensOf(sprite);
+      this.#fitSpriteToCard(sprite);
+      sprite.setPosition(rest.x, rest.y).setDepth(location.index);
+    });
   }
 
   #draggedRect(pointer: Phaser.Input.Pointer, drag: DragState): Rect {
@@ -375,12 +508,17 @@ export class BoardScene extends Phaser.Scene {
     drag.isDragging = true;
 
     const { x, y } = this.#draggedRect(pointer, drag);
+    const liftOffset = this.#liftOffset();
+    const { scaleX, scaleY } = this.#cardScale(LIFT_SCALE);
     // Dragged runs keep a readable fan regardless of how squeezed their column was.
-    const step = this.#layout.cardHeight * 0.26;
+    const step = this.#layout.cardHeight * 0.26 * LIFT_SCALE;
     drag.cards.forEach((card, offset) => {
       const sprite = this.#sprites[card];
       this.tweens.killTweensOf(sprite);
-      sprite.setPosition(x, y + offset * step).setDepth(FLYING_DEPTH * 2 + offset);
+      sprite
+        .setPosition(x - liftOffset.x, y - liftOffset.y + offset * step)
+        .setScale(scaleX, scaleY)
+        .setDepth(FLYING_DEPTH * 2 + offset);
     });
   }
 
@@ -390,6 +528,7 @@ export class BoardScene extends Phaser.Scene {
     this.#drag = undefined;
 
     if (!drag.isDragging) {
+      this.#dropLift(drag.cards);
       const location = this.#locate(drag.cards[0]);
       if (location) this.#host.tapCard(location);
       return;
@@ -412,8 +551,8 @@ export class BoardScene extends Phaser.Scene {
 
   #cancelDrag(): void {
     if (!this.#drag) return;
-    const wasDragging = this.#drag.isDragging;
     this.#drag = undefined;
-    if (wasDragging) this.#placeCards({ animate: true });
+    // Picked-up cards are lifted even before they move, so always put them back.
+    this.#placeCards({ animate: true });
   }
 }

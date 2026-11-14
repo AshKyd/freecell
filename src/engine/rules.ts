@@ -31,6 +31,16 @@ export const HOME_CELL_PILES = pileRange(HOME_CELL_START, PILE_COUNT);
 
 export const topCard = (pile: CardId[]): CardId | undefined => pile.at(-1);
 
+/** Piles after moving cards, without checking the rules. */
+export const movePiles = ({ piles, move }: { piles: Piles; move: Move }): Piles => {
+  const movingCards = piles[move.from].slice(-move.count);
+  return piles.map((pile, index) => {
+    if (index === move.from) return pile.slice(0, -move.count);
+    if (index === move.to) return [...pile, ...movingCards];
+    return pile;
+  });
+};
+
 // ── Stacking rules ───────────────────────────────────────────────────────
 
 /** Tableau stacking: one rank lower, opposite colour. */

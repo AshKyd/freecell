@@ -11,7 +11,9 @@ import {
   isHomeCell,
   isTableau,
   listLegalMoves,
+  movePiles,
 } from './rules.ts';
+import { decomposeRunMove } from './supermove.ts';
 
 /**
  * Whole game as plain data so it can be saved to localStorage and restored.
@@ -21,8 +23,10 @@ export interface GameState {
   gameNumber: number;
   piles: Piles;
   /**
-   * One entry per player move. Each entry holds the player's move followed
-   * by the automatic home-cell moves it triggered, so undo reverses them together.
+   * One entry per player move. Each entry holds the single-card steps of
+   * the player's move followed by the automatic home-cell moves it
+   * triggered, so undo reverses them together. (Saves from before run moves
+   * were broken into steps may hold a multi-card move; undo handles both.)
    */
   history: Move[][];
   /** Each undo adds a two move penalty to the move count (legacy scoring). */
@@ -37,26 +41,22 @@ export const createGame = ({ gameNumber }: { gameNumber: number }): GameState =>
 
 // ── Moving cards ─────────────────────────────────────────────────────────
 
-/** Moves cards without checking rules. */
-const movedPiles = ({ piles, move }: { piles: Piles; move: Move }): Piles => {
-  const movingCards = piles[move.from].slice(-move.count);
-  return piles.map((pile, index) => {
-    if (index === move.from) return pile.slice(0, -move.count);
-    if (index === move.to) return [...pile, ...movingCards];
-    return pile;
-  });
-};
+const applySteps = ({ piles, steps }: { piles: Piles; steps: Move[] }): Piles =>
+  steps.reduce((currentPiles, move) => movePiles({ piles: currentPiles, move }), piles);
 
 /** Safe automatic moves to the home cells, repeated until none are left. */
 const collectAutoMoves = (piles: Piles, collected: Move[] = []): { piles: Piles; autoMoves: Move[] } => {
   const autoMove = findSafeAutoMove(piles);
   if (!autoMove) return { piles, autoMoves: collected };
-  return collectAutoMoves(movedPiles({ piles, move: autoMove }), [...collected, autoMove]);
+  return collectAutoMoves(movePiles({ piles, move: autoMove }), [...collected, autoMove]);
 };
 
 export interface MoveResult {
   state: GameState;
-  /** The player's move then any automatic moves, in the order to animate them. */
+  /**
+   * Every single-card move made, in order: the player's move (broken into
+   * steps through the free cells if it was a run), then any automatic moves.
+   */
   appliedMoves: Move[];
 }
 
@@ -64,9 +64,10 @@ export interface MoveResult {
 export const applyMove = ({ state, move }: { state: GameState; move: Move }): MoveResult | null => {
   if (!canMove({ piles: state.piles, move })) return null;
 
-  const afterPlayerMove = movedPiles({ piles: state.piles, move });
+  const playerSteps = decomposeRunMove({ piles: state.piles, move });
+  const afterPlayerMove = applySteps({ piles: state.piles, steps: playerSteps });
   const { piles, autoMoves } = collectAutoMoves(afterPlayerMove);
-  const appliedMoves = [move, ...autoMoves];
+  const appliedMoves = [...playerSteps, ...autoMoves];
 
   return {
     state: { ...state, piles, history: [...state.history, appliedMoves] },
@@ -80,7 +81,7 @@ export const undoMove = (state: GameState): MoveResult | null => {
   if (!lastMoves) return null;
 
   const reversedMoves = lastMoves.toReversed().map(({ from, to, count }) => ({ from: to, to: from, count }));
-  const piles = reversedMoves.reduce((currentPiles, move) => movedPiles({ piles: currentPiles, move }), state.piles);
+  const piles = applySteps({ piles: state.piles, steps: reversedMoves });
 
   return {
     state: { ...state, piles, history: state.history.slice(0, -1), undoCount: state.undoCount + 1 },

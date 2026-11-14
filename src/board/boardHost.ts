@@ -5,8 +5,12 @@ import type { Move, Piles } from '../engine/rules.ts';
 export type BoardEvent =
   /** A new deal or a restored game: place every card. */
   | { type: 'deal' }
-  /** Cards moved (play, automatic moves or undo), in the order to animate them. */
-  | { type: 'moves'; movedCards: CardId[] }
+  /**
+   * Cards moved by a play, its automatic moves, or an undo. `steps` are
+   * single-card moves in order (a run move arrives as its steps through the
+   * free cells), to be played from the `before` piles one at a time.
+   */
+  | { type: 'moves'; before: Piles; steps: Move[] }
   | { type: 'hint'; move: Move }
   /** The player tried something that is not allowed with these cards. */
   | { type: 'reject'; cards: CardId[] }
