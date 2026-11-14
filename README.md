@@ -15,6 +15,8 @@ Built with Phaser 4 (board), Svelte 5 (toolbar and dialogs) and Vite.
 
 Needs Node 25 or newer.
 
+Each feature is explained in `devdocs/features.md`.
+
 ## Layout
 
 - `src/engine/` holds the game rules. Plain TypeScript, no DOM, no Phaser.
