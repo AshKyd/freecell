@@ -43,7 +43,7 @@ export class BoardScene extends Phaser.Scene {
   #hintGraphics!: Phaser.GameObjects.Graphics;
   #drag: DragState | undefined;
   /** Size and face style of the card textures in use; undefined until the first set is ready. */
-  #textureSet: { widthPx: number; style: FaceStyle } | undefined;
+  #textureSet: { widthPx: number; heightPx: number; marginPx: number; style: FaceStyle } | undefined;
   #textureBuildId = 0;
   #unsubscribe: (() => void) | undefined;
 
@@ -123,19 +123,35 @@ export class BoardScene extends Phaser.Scene {
     if (previous?.widthPx === widthPx && previous.style === style) return;
 
     const buildId = ++this.#textureBuildId;
-    const canvases = await renderAllCards({ widthPx, heightPx, style });
+    const { canvases, marginPx } = await renderAllCards({ widthPx, heightPx, style, pixelRatio: this.#pixelRatio });
     // A newer resize started while this one was drawing, or the scene has gone.
     if (buildId !== this.#textureBuildId || !this.sys.isActive()) return;
 
+    this.#textureSet = { widthPx, heightPx, marginPx, style };
     canvases.forEach((canvas, card) => {
       const key = cardTextureKey({ card, widthPx, style });
       if (!this.textures.exists(key)) this.textures.addCanvas(key, canvas);
-      this.#sprites[card].setTexture(key).setDisplaySize(this.#layout.cardWidth, this.#layout.cardHeight).setVisible(true);
+      const sprite = this.#sprites[card].setTexture(key).setVisible(true);
+      this.#fitSpriteToCard(sprite);
     });
     if (previous) {
-      canvases.forEach((_, card) => this.textures.remove(cardTextureKey({ card, ...previous })));
+      canvases.forEach((_, card) => this.textures.remove(cardTextureKey({ card, widthPx: previous.widthPx, style: previous.style })));
     }
-    this.#textureSet = { widthPx, style };
+  }
+
+  /**
+   * Textures carry a shadow margin around the card. The origin is set to the
+   * card's top-left corner inside that margin, so a sprite's position is the
+   * card's position, and the sprite is scaled so the card part matches the
+   * layout (old textures stretch to fit until the new ones are drawn).
+   */
+  #fitSpriteToCard(sprite: Phaser.GameObjects.Image): void {
+    const textureSet = this.#textureSet;
+    if (!textureSet) return;
+    const { widthPx, heightPx, marginPx } = textureSet;
+    sprite
+      .setOrigin(marginPx / (widthPx + marginPx * 2), marginPx / (heightPx + marginPx * 2))
+      .setScale(this.#layout.cardWidth / widthPx, this.#layout.cardHeight / heightPx);
   }
 
   // ── Placing cards ──────────────────────────────────────────────────────
@@ -171,7 +187,8 @@ export class BoardScene extends Phaser.Scene {
         const orderIndex = fromDeck ? index * 8 + pile : order.indexOf(card);
 
         this.tweens.killTweensOf(sprite);
-        sprite.setDisplaySize(cardWidth, cardHeight).setAngle(0).setAlpha(1);
+        this.#fitSpriteToCard(sprite);
+        sprite.setAngle(0).setAlpha(1);
 
         if (fromDeck && shouldAnimate) sprite.setPosition(this.scale.width / 2 - cardWidth / 2, -cardHeight);
 

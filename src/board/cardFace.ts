@@ -69,11 +69,12 @@ const suitShape = ({
   return `<path transform="translate(${centreX - size / 2} ${centreY - size / 2})${rotation} scale(${size / 100})" fill="${fill}" d="${SUIT_PATHS[suit]}"/>`;
 };
 
-const CARD_OUTLINE =
-  '<rect x="0.75" y="0.75" width="98.5" height="138.5" rx="7" fill="#fdfdfb" stroke="#9aa0a6" stroke-width="1.5"/>';
+/** Card background with a hairline edge. `outlineWidth` is in face units, inset so it stays inside the card. */
+const cardOutline = (outlineWidth: number): string =>
+  `<rect x="${outlineWidth / 2}" y="${outlineWidth / 2}" width="${FACE_WIDTH - outlineWidth}" height="${FACE_HEIGHT - outlineWidth}" rx="7" fill="#fdfdfb" stroke="#a9aeb4" stroke-width="${outlineWidth}"/>`;
 
-const artFrame = ({ x, y, width, height }: Box): string =>
-  `<rect x="${x - 0.5}" y="${y - 0.5}" width="${width + 1}" height="${height + 1}" rx="2" fill="none" stroke="#c9ccd1"/>`;
+const artFrame = ({ box: { x, y, width, height }, outlineWidth }: { box: Box; outlineWidth: number }): string =>
+  `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="2" fill="none" stroke="#c9ccd1" stroke-width="${outlineWidth}"/>`;
 
 // ── Classic layout ───────────────────────────────────────────────────────
 
@@ -131,10 +132,10 @@ ${suitShape({ suit: suitOf(card), centreX: 8.5, centreY: 29, size: 12, fill })}`
   return `${index}\n<g transform="rotate(180 50 70)">${index}</g>`;
 };
 
-const classicBody = ({ card, fill }: { card: CardId; fill: string }): string => {
+const classicBody = ({ card, fill, outlineWidth }: { card: CardId; fill: string; outlineWidth: number }): string => {
   const rank = rankOf(card);
   const suit = suitOf(card);
-  if (rank > 10) return artFrame(COURT_ART_BOXES.classic);
+  if (rank > 10) return artFrame({ box: COURT_ART_BOXES.classic, outlineWidth });
   if (rank === 1) return suitShape({ suit, centreX: 50, centreY: 70, size: 42, fill });
   return PIP_LAYOUTS[rank]
     .map(([centreX, centreY]) => suitShape({ suit, centreX, centreY, size: 19, fill, upsideDown: centreY > PIP_ROW.middle }))
@@ -150,23 +151,26 @@ const compactIndex = ({ card, fill }: { card: CardId; fill: string }): string =>
 ${suitShape({ suit: suitOf(card), centreX: 77, centreY: 22, size: 30, fill })}`;
 };
 
-const compactBody = ({ card, fill }: { card: CardId; fill: string }): string =>
+const compactBody = ({ card, fill, outlineWidth }: { card: CardId; fill: string; outlineWidth: number }): string =>
   rankOf(card) > 10
-    ? artFrame(COURT_ART_BOXES.compact)
+    ? artFrame({ box: COURT_ART_BOXES.compact, outlineWidth })
     : suitShape({ suit: suitOf(card), centreX: 50, centreY: 89, size: 58, fill });
 
 // ── Face ─────────────────────────────────────────────────────────────────
 
-/** SVG for a card face. Court cards leave their `COURT_ART_BOXES` area empty for the artwork. */
-export const cardFaceSvg = ({ card, style }: { card: CardId; style: FaceStyle }): string => {
+/**
+ * SVG for a card face. Court cards leave their `COURT_ART_BOXES` area empty for the artwork.
+ * `outlineWidth` is in face units; pass the width of one screen pixel so edges stay a hairline at any card size.
+ */
+export const cardFaceSvg = ({ card, style, outlineWidth = 1 }: { card: CardId; style: FaceStyle; outlineWidth?: number }): string => {
   const fill = SUIT_COLOURS[colourOf(card)];
   const parts =
     style === 'classic'
-      ? [classicCornerIndex({ card, fill }), classicBody({ card, fill })]
-      : [compactIndex({ card, fill }), compactBody({ card, fill })];
+      ? [classicCornerIndex({ card, fill }), classicBody({ card, fill, outlineWidth })]
+      : [compactIndex({ card, fill }), compactBody({ card, fill, outlineWidth })];
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${FACE_WIDTH} ${FACE_HEIGHT}">
-${CARD_OUTLINE}
+${cardOutline(outlineWidth)}
 ${parts.join('\n')}
 </svg>`;
 };

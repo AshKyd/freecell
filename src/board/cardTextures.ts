@@ -39,41 +39,67 @@ const loadCourtArt = (style: FaceStyle): Promise<Map<CardId, HTMLImageElement>> 
   return loading;
 };
 
+// ── Shadow ───────────────────────────────────────────────────────────────
+
+/** Subtle drop shadow under each card, in CSS pixels. Baked into the texture so it costs nothing to draw. */
+const SHADOW = { offsetY: 1, blur: 3, colour: 'rgb(0 0 0 / 30%)' };
+/** Transparent space around the card in its texture, in CSS pixels, so the shadow is not clipped. */
+const SHADOW_MARGIN_CSS = SHADOW.blur + SHADOW.offsetY + 1;
+
 // ── Rasterising ──────────────────────────────────────────────────────────
 
 const svgDataUrl = (svg: string): string => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
 /**
- * Draws one card at an exact pixel size. Rasterising at the size the card
- * is shown (in device pixels) is what keeps cards sharp at any screen size.
+ * Draws one card at an exact pixel size, with its shadow in a margin around it.
+ * Rasterising at the size the card is shown (in device pixels) is what keeps
+ * cards sharp, and the outline a true 1px line, at any screen size.
  */
 const renderCard = async ({
   card,
   style,
   widthPx,
   heightPx,
+  pixelRatio,
+  marginPx,
   courtArt,
 }: {
   card: CardId;
   style: FaceStyle;
   widthPx: number;
   heightPx: number;
+  pixelRatio: number;
+  marginPx: number;
   courtArt: HTMLImageElement | undefined;
 }): Promise<HTMLCanvasElement> => {
   const canvas = document.createElement('canvas');
-  canvas.width = widthPx;
-  canvas.height = heightPx;
+  canvas.width = widthPx + marginPx * 2;
+  canvas.height = heightPx + marginPx * 2;
   const context = canvas.getContext('2d');
   if (!context) return canvas;
 
-  const face = await loadImage(svgDataUrl(cardFaceSvg({ card, style })));
-  context.drawImage(face, 0, 0, widthPx, heightPx);
-  if (!courtArt) return canvas;
-
   const scaleX = widthPx / FACE_WIDTH;
   const scaleY = heightPx / FACE_HEIGHT;
+  const onePixelInFaceUnits = pixelRatio / scaleX;
+  const face = await loadImage(svgDataUrl(cardFaceSvg({ card, style, outlineWidth: onePixelInFaceUnits })));
+
+  context.translate(marginPx, marginPx);
+  context.shadowColor = SHADOW.colour;
+  context.shadowBlur = SHADOW.blur * pixelRatio;
+  context.shadowOffsetY = SHADOW.offsetY * pixelRatio;
+  context.drawImage(face, 0, 0, widthPx, heightPx);
+  context.shadowColor = 'transparent';
+  if (!courtArt) return canvas;
+
   const box = COURT_ART_BOXES[style];
-  const [x, y, width, height] = [box.x * scaleX, box.y * scaleY, box.width * scaleX, box.height * scaleY];
+  // Inset by the frame line so the artwork sits inside it.
+  const inset = onePixelInFaceUnits / 2;
+  const [x, y, width, height] = [
+    (box.x + inset) * scaleX,
+    (box.y + inset) * scaleY,
+    (box.width - inset * 2) * scaleX,
+    (box.height - inset * 2) * scaleY,
+  ];
 
   context.imageSmoothingQuality = 'high';
   context.save();
@@ -85,22 +111,34 @@ const renderCard = async ({
   return canvas;
 };
 
-/** Canvases for all 52 cards at the given pixel size and style, indexed by card id. */
+export interface CardTextureSet {
+  /** Canvases indexed by card id. Each is the card plus `marginPx` on every side. */
+  canvases: HTMLCanvasElement[];
+  widthPx: number;
+  heightPx: number;
+  marginPx: number;
+}
+
+/** Textures for all 52 cards at the given pixel size and style. */
 export const renderAllCards = async ({
   widthPx,
   heightPx,
   style,
+  pixelRatio,
 }: {
   widthPx: number;
   heightPx: number;
   style: FaceStyle;
-}): Promise<HTMLCanvasElement[]> => {
+  pixelRatio: number;
+}): Promise<CardTextureSet> => {
+  const marginPx = Math.ceil(SHADOW_MARGIN_CSS * pixelRatio);
   const courtArt = await loadCourtArt(style);
-  return Promise.all(
+  const canvases = await Promise.all(
     Array.from({ length: CARD_COUNT }, (_, card) =>
-      renderCard({ card, style, widthPx, heightPx, courtArt: courtArt.get(card) }),
+      renderCard({ card, style, widthPx, heightPx, pixelRatio, marginPx, courtArt: courtArt.get(card) }),
     ),
   );
+  return { canvases, widthPx, heightPx, marginPx };
 };
 
 export const cardTextureKey = ({ card, widthPx, style }: { card: CardId; widthPx: number; style: FaceStyle }): string =>
