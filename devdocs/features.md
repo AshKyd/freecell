@@ -45,10 +45,11 @@ What each feature does and where it lives. Keep this file up to date when a feat
 - `findHint` in `src/engine/hint.ts` scores every useful move and picks the best: free a cell, play home, uncover useful cards, and use a free cell only as a last resort.
 - `#showHint` in `src/board/BoardScene.ts` marks the cards to move (warm colours) and where they go (cool colours).
 - `createHintRing` in `src/board/hintRing.ts` draws the effect over the cards:
-  - An outline whose glow pulses on a sine wave.
+  - An outline with a steady glow (`GLOW_STRENGTH`).
   - Particles that appear at random spots round the outline. Each grows, fades and shimmers on its own sine curve (`src/board/organicPulse.ts`).
   - The particle rate swells and quietens on a slow sine wave.
-- The hint shows for `HINT_SHOW_MS`, then fades. Any press or game change clears it.
+  - The particles fade in over `FADE_IN_MS` and fade out over the time `BoardScene` asks for. The outline and glow fade `GLOW_FADE_SLOWDOWN` times slower.
+- The hint shows for `HINT_SHOW_MS`, then fades out over `HINT_FADE_MS`. Pressing Hint again while the same hint shows restarts that timer without replaying the animation. Any press or game change fades it out sooner (`HINT_CLEAR_FADE_MS`). A resize removes it at once.
 - If there is no useful move, the status line says so.
 
 ## Tap to move
@@ -121,7 +122,7 @@ What each feature does and where it lives. Keep this file up to date when a feat
 
 ## Reduced motion
 
-- When the system asks for reduced motion, card moves are instant, there are no hint particles, the hint glow is steady and dialogs do not animate.
+- When the system asks for reduced motion, card moves are instant, there are no hint particles and dialogs do not animate.
 
 ## Offline
 

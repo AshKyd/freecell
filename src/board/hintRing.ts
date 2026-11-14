@@ -24,10 +24,12 @@ const TWINKLE_CYCLES = { min: 0.8, max: 2.5 };
  */
 const SWELL_MS = { min: 700, max: 1300 };
 const SWELL_QUIETEST = 0.3;
-/** Outline glow strength, pulsing on a sine wave. */
-const GLOW_MIN = 1.5;
-const GLOW_MAX = 6;
-const PULSE_MS = 550;
+/** Outline glow strength, held steady. */
+const GLOW_STRENGTH = 3.75;
+/** How long the particles take to fade in when the hint appears. */
+const FADE_IN_MS = 250;
+/** The outline and glow fade in and out this many times slower than the particles, so they linger softly. */
+const GLOW_FADE_SLOWDOWN = 2.5;
 
 export interface HintRingStyle {
   /** Colour of the glowing outline. */
@@ -63,11 +65,12 @@ const randomSigned = (size: number): number => (Math.random() * 2 - 1) * size;
 
 /**
  * A hint marker wrapped round one area of the board (the cards to pick
- * up, or the place to put them), drawn over the cards: an outline whose
- * glow pulses on a sine wave, and soft particles that pop up at random
+ * up, or the place to put them), drawn over the cards: an outline with a
+ * steady glow, and soft particles that pop up at random
  * spots round it. Each particle blooms and fades on its own sine curve
  * with a shimmer, and the swarm swells and quietens on a slow sine wave.
- * With reduced motion the glow is steady and there are no particles.
+ * The whole marker fades in when created and fades out before removal.
+ * With reduced motion there are no particles.
  */
 export const createHintRing = ({
   scene,
@@ -95,18 +98,50 @@ export const createHintRing = ({
   outline.strokeRoundedRect(outlineRect.x, outlineRect.y, outlineRect.width, outlineRect.height, radius);
 
   // Filters need WebGL; on the canvas renderer the plain outline is shown.
-  const glow = scene.renderer.type === Phaser.WEBGL ? outline.enableFilters().filters?.external.addGlow(style.glowColour, GLOW_MIN, 0) : undefined;
-  if (glow && !reduceMotion) {
-    scene.tweens.add({ targets: glow, outerStrength: GLOW_MAX, duration: PULSE_MS, ease: 'Sine.easeInOut', yoyo: true, repeat: -1 });
-  }
-  if (glow && reduceMotion) glow.outerStrength = (GLOW_MIN + GLOW_MAX) / 2;
+  const glow = scene.renderer.type === Phaser.WEBGL ? outline.enableFilters().filters?.external.addGlow(style.glowColour, 0, 0) : undefined;
 
-  if (reduceMotion) {
-    return {
-      destroy: () => outline.destroy(),
-      fadeOut: (fadeMs) => scene.tweens.add({ targets: outline, alpha: 0, duration: fadeMs, onComplete: () => outline.destroy() }),
-    };
-  }
+  // ── Fade in and out ──
+  // Each level (0 to 1) fades its part: `glowVisibility` the outline and glow, `particleVisibility` the particles.
+  // They are separate so the glow can fade more slowly than the particles.
+  // The glow strength is scaled too, because the filter's glow does not dim with the outline's alpha alone.
+  const glowVisibility = { level: 0 };
+  const particleVisibility = { level: 0 };
+  let emitter: Phaser.GameObjects.Particles.ParticleEmitter | undefined;
+  const applyVisibility = () => {
+    outline.setAlpha(glowVisibility.level);
+    if (glow) glow.outerStrength = GLOW_STRENGTH * glowVisibility.level;
+    emitter?.setAlpha(particleVisibility.level);
+  };
+  applyVisibility();
+
+  /** Tweens both levels to `level`; the glow takes `GLOW_FADE_SLOWDOWN` times as long. Calls `onDone` once the glow, the slower one, finishes. */
+  const fadeTo = ({ level, particleMs, ease, onDone }: { level: number; particleMs: number; ease: string; onDone?: () => void }) => {
+    scene.tweens.killTweensOf([glowVisibility, particleVisibility]);
+    scene.tweens.add({ targets: particleVisibility, level, duration: particleMs, ease, onUpdate: applyVisibility });
+    scene.tweens.add({
+      targets: glowVisibility,
+      level,
+      duration: particleMs * GLOW_FADE_SLOWDOWN,
+      ease,
+      onUpdate: applyVisibility,
+      onComplete: onDone,
+    });
+  };
+  fadeTo({ level: 1, particleMs: FADE_IN_MS, ease: 'Sine.easeOut' });
+
+  const destroy = () => {
+    scene.tweens.killTweensOf([glowVisibility, particleVisibility]);
+    outline.destroy();
+    emitter?.destroy();
+  };
+
+  /** Stops new particles (those showing finish their short life) and fades everything from its current level. */
+  const fadeOut = (fadeMs: number) => {
+    emitter?.stop();
+    fadeTo({ level: 0, particleMs: fadeMs, ease: 'Sine.easeIn', onDone: destroy });
+  };
+
+  if (reduceMotion) return { destroy, fadeOut };
 
   // ── Particles wrapped round the outline ──
   // Each particle's random traits, set as it is emitted. Phaser reuses particle objects, so this is overwritten each time.
@@ -138,7 +173,7 @@ export const createHintRing = ({
   const outlineLengthCss = (2 * (outlineRect.width + outlineRect.height)) / pixelRatio;
   const busiestEmitEveryMs = 1000 / (outlineLengthCss * PARTICLES_PER_SECOND_PER_CSS_PX) || EMIT_EVERY_MS;
 
-  const emitter = scene.add
+  const particleEmitter = scene.add
     .particles(0, 0, HINT_PARTICLE_TEXTURE, {
       emitZone: { type: 'random', source: randomSpotNearOutline },
       frequency: busiestEmitEveryMs,
@@ -152,6 +187,8 @@ export const createHintRing = ({
       emitCallback: onEmitted,
     })
     .setDepth(depth + 1);
+  emitter = particleEmitter;
+  applyVisibility();
 
   // Swell and quieten: slow the emission rate down and up on a sine wave.
   const swell = { level: 1 };
@@ -162,23 +199,17 @@ export const createHintRing = ({
     ease: 'Sine.easeInOut',
     yoyo: true,
     repeat: -1,
-    onUpdate: () => emitter.setFrequency(busiestEmitEveryMs / (SWELL_QUIETEST + (1 - SWELL_QUIETEST) * swell.level)),
+    onUpdate: () => particleEmitter.setFrequency(busiestEmitEveryMs / (SWELL_QUIETEST + (1 - SWELL_QUIETEST) * swell.level)),
   });
 
-  const destroy = () => {
-    scene.tweens.killTweensOf([outline, swell, emitter]);
-    if (glow) scene.tweens.killTweensOf(glow);
-    outline.destroy();
-    emitter.destroy();
-  };
-
   return {
-    destroy,
-    fadeOut: (fadeMs) => {
-      // Stop making particles; those already showing finish their short life.
-      emitter.stop();
+    destroy: () => {
       scene.tweens.killTweensOf(swell);
-      scene.tweens.add({ targets: [outline, emitter], alpha: 0, duration: fadeMs, onComplete: destroy });
+      destroy();
+    },
+    fadeOut: (fadeMs) => {
+      scene.tweens.killTweensOf(swell);
+      fadeOut(fadeMs);
     },
   };
 };

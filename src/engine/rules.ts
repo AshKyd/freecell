@@ -18,7 +18,10 @@ export interface Move {
   count: number;
 }
 
-export const isTableau = (pile: number): boolean => pile >= TABLEAU_START && pile < FREE_CELL_START;
+export const isSameMove = (first: Move, second: Move): boolean =>
+  first.from === second.from && first.to === second.to && first.count === second.count;
+
+export const isTableau =(pile: number): boolean => pile >= TABLEAU_START && pile < FREE_CELL_START;
 export const isFreeCell = (pile: number): boolean => pile >= FREE_CELL_START && pile < HOME_CELL_START;
 export const isHomeCell = (pile: number): boolean => pile >= HOME_CELL_START && pile < PILE_COUNT;
 

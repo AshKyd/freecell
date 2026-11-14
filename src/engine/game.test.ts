@@ -4,7 +4,7 @@ import { findBestDestination, findSafeAutoMove } from './autoMove.ts';
 import { type GameState, applyMove, createGame, isStuck, isWon, listUsefulMoves, moveCount, undoMove } from './game.ts';
 import { findHint } from './hint.ts';
 import { createMsRand } from './msRand.ts';
-import { PILE_COUNT, type Piles, canMove, maxRunLength, orderedRunLength, pickableRunLength } from './rules.ts';
+import { PILE_COUNT, type Piles, canMove, isSameMove, maxRunLength, orderedRunLength, pickableRunLength } from './rules.ts';
 
 /** Builds piles from card codes. Piles not listed are empty. */
 const pilesFrom = (layout: Record<number, string>): Piles =>
@@ -47,6 +47,16 @@ describe('stacking rules', () => {
     expect(orderedRunLength(pilesFrom({ 0: '2C KD QS JH' })[0])).toBe(3);
     expect(orderedRunLength(pilesFrom({ 0: 'KD QH' })[0])).toBe(1);
     expect(orderedRunLength([])).toBe(0);
+  });
+});
+
+describe('isSameMove', () => {
+  it('matches only when from, to and count all match', () => {
+    const move = { from: 2, to: 9, count: 3 };
+    expect(isSameMove(move, { ...move })).toBe(true);
+    expect(isSameMove(move, { ...move, from: 1 })).toBe(false);
+    expect(isSameMove(move, { ...move, to: 8 })).toBe(false);
+    expect(isSameMove(move, { ...move, count: 1 })).toBe(false);
   });
 });
 

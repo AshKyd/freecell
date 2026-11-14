@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { CARD_COUNT, type CardId } from '../engine/cards.ts';
-import { FREE_CELL_PILES, HOME_CELL_PILES, type Move, type Piles, isHomeCell, movePiles } from '../engine/rules.ts';
+import { FREE_CELL_PILES, HOME_CELL_PILES, type Move, type Piles, isHomeCell, isSameMove, movePiles } from '../engine/rules.ts';
 import type { BoardEvent, BoardHost } from './boardHost.ts';
 import { type BoardLayout, type Rect, cardPosition, computeBoardLayout, dropTargetPile } from './boardLayout.ts';
 import type { FaceStyle } from './cardFace.ts';
@@ -30,6 +30,8 @@ const HINT_DEPTH = 1500;
 /** How long a hint shows before fading, and how long the fade takes. */
 const HINT_SHOW_MS = 2600;
 const HINT_FADE_MS = 350;
+/** Shorter fade when a press or game change clears the hint early. */
+const HINT_CLEAR_FADE_MS = 150;
 /** How far the pointer must travel, in CSS pixels, before a press becomes a drag. */
 const DRAG_THRESHOLD_CSS = 6;
 
@@ -65,6 +67,8 @@ export class BoardScene extends Phaser.Scene {
   #slotGraphics!: Phaser.GameObjects.Graphics;
   #hintRings: HintRing[] = [];
   #hintTimer: Phaser.Time.TimerEvent | undefined;
+  /** The move the current hint marks, so a repeat request for it can just extend it. */
+  #shownHintMove: Move | undefined;
   #drag: DragState | undefined;
   /** Size and face style of the card textures in use; undefined until the first set is ready. */
   #textureSet: { widthPx: number; heightPx: number; marginPx: number; style: FaceStyle } | undefined;
@@ -119,7 +123,7 @@ export class BoardScene extends Phaser.Scene {
     this.#layout = this.#computeLayout();
     this.#cancelDrag();
     this.#drawSlots();
-    this.#clearHint();
+    this.#clearHint({ fadeMs: 0 });
     this.#placeCards({ animate: false });
     void this.#rebuildTextures();
   }
@@ -266,6 +270,11 @@ export class BoardScene extends Phaser.Scene {
   // ── Game events ────────────────────────────────────────────────────────
 
   #onBoardEvent(event: BoardEvent): void {
+    // A hint handles its own clearing, so pressing Hint again can keep the one showing.
+    if (event.type === 'hint') {
+      this.#showHint(event.move);
+      return;
+    }
     this.#clearHint();
 
     if (event.type === 'deal') {
@@ -275,10 +284,6 @@ export class BoardScene extends Phaser.Scene {
     }
     if (event.type === 'moves') {
       this.#animateSteps(event);
-      return;
-    }
-    if (event.type === 'hint') {
-      this.#showHint(event.move);
       return;
     }
     if (event.type === 'reject') {
@@ -345,11 +350,18 @@ export class BoardScene extends Phaser.Scene {
 
   /**
    * Wraps the cards to pick up (warm colours) and where to put them (cool
-   * colours) in a pulsing glow outline with particles twinkling round it,
+   * colours) in a steady glowing outline with particles twinkling round it,
    * then fades out. Any press or game change clears them sooner.
+   * Asking again for the hint already showing only restarts its timer, so
+   * repeated presses keep it on longer without replaying the fade-in.
    */
   #showHint(move: Move): void {
+    if (this.#hintRings.length > 0 && this.#shownHintMove && isSameMove(this.#shownHintMove, move)) {
+      this.#startHintTimer();
+      return;
+    }
     this.#clearHint();
+    this.#shownHintMove = move;
     const piles = this.#host.getPiles();
     const { cardWidth, cardHeight } = this.#layout;
     const sourceLength = piles[move.from].length;
@@ -387,16 +399,27 @@ export class BoardScene extends Phaser.Scene {
         style,
       }),
     );
+    this.#startHintTimer();
+  }
+
+  /** (Re)starts the countdown to fading out the hint that is showing. */
+  #startHintTimer(): void {
+    this.#hintTimer?.remove();
     this.#hintTimer = this.time.delayedCall(HINT_SHOW_MS, () => {
+      this.#hintTimer = undefined;
       this.#hintRings.forEach((ring) => ring.fadeOut(HINT_FADE_MS));
       this.#hintRings = [];
     });
   }
 
-  #clearHint(): void {
+  /**
+   * Removes the current hint. By default it fades out quickly so it does not
+   * blink away; pass `fadeMs: 0` when the layout changed and its spot is stale.
+   */
+  #clearHint({ fadeMs = HINT_CLEAR_FADE_MS }: { fadeMs?: number } = {}): void {
     this.#hintTimer?.remove();
     this.#hintTimer = undefined;
-    this.#hintRings.forEach((ring) => ring.destroy());
+    this.#hintRings.forEach((ring) => (fadeMs > 0 ? ring.fadeOut(fadeMs) : ring.destroy()));
     this.#hintRings = [];
   }
 
