@@ -4,6 +4,7 @@ import { FREE_CELL_PILES, HOME_CELL_PILES, type Move, type Piles, isHomeCell, mo
 import type { BoardEvent, BoardHost } from './boardHost.ts';
 import { type BoardLayout, type Rect, cardPosition, computeBoardLayout, dropTargetPile } from './boardLayout.ts';
 import type { FaceStyle } from './cardFace.ts';
+import { type HintRing, createHintRing, ensureHintSparkTexture } from './hintRing.ts';
 import { cardTextureKey, renderAllCards } from './cardTextures.ts';
 
 const MOVE_DURATION_MS = 170;
@@ -23,6 +24,9 @@ const LIFT_DURATION_MS = 80;
 /** Cards in flight are drawn above everything at rest. */
 const FLYING_DEPTH = 1000;
 const HINT_DEPTH = 5000;
+/** How long a hint shows before fading, and how long the fade takes. */
+const HINT_SHOW_MS = 2600;
+const HINT_FADE_MS = 350;
 /** How far the pointer must travel, in CSS pixels, before a press becomes a drag. */
 const DRAG_THRESHOLD_CSS = 6;
 
@@ -56,7 +60,8 @@ export class BoardScene extends Phaser.Scene {
   #layout!: BoardLayout;
   #sprites: Phaser.GameObjects.Image[] = [];
   #slotGraphics!: Phaser.GameObjects.Graphics;
-  #hintGraphics!: Phaser.GameObjects.Graphics;
+  #hintRings: HintRing[] = [];
+  #hintTimer: Phaser.Time.TimerEvent | undefined;
   #drag: DragState | undefined;
   /** Size and face style of the card textures in use; undefined until the first set is ready. */
   #textureSet: { widthPx: number; heightPx: number; marginPx: number; style: FaceStyle } | undefined;
@@ -77,7 +82,7 @@ export class BoardScene extends Phaser.Scene {
   create(): void {
     this.#layout = this.#computeLayout();
     this.#slotGraphics = this.add.graphics();
-    this.#hintGraphics = this.add.graphics().setDepth(HINT_DEPTH);
+    ensureHintSparkTexture({ scene: this, pixelRatio: this.#pixelRatio });
 
     // Cards start hidden and appear once their textures have been drawn.
     this.#sprites = Array.from({ length: CARD_COUNT }, (_, card) =>
@@ -111,7 +116,7 @@ export class BoardScene extends Phaser.Scene {
     this.#layout = this.#computeLayout();
     this.#cancelDrag();
     this.#drawSlots();
-    this.#hintGraphics.clear();
+    this.#clearHint();
     this.#placeCards({ animate: false });
     void this.#rebuildTextures();
   }
@@ -258,8 +263,7 @@ export class BoardScene extends Phaser.Scene {
   // ── Game events ────────────────────────────────────────────────────────
 
   #onBoardEvent(event: BoardEvent): void {
-    this.#hintGraphics.clear();
-    this.tweens.killTweensOf(this.#hintGraphics);
+    this.#clearHint();
 
     if (event.type === 'deal') {
       this.#cancelDrag();
@@ -336,8 +340,13 @@ export class BoardScene extends Phaser.Scene {
     });
   }
 
-  /** Outlines the cards to pick up and the place to put them, then fades out. */
+  /**
+   * Marks the cards to pick up (warm gold) and where to put them (cool
+   * blue) with glowing, pulsing outlines and particles circling each, then
+   * fades them out. Any press or game change clears them sooner.
+   */
   #showHint(move: Move): void {
+    this.#clearHint();
     const piles = this.#host.getPiles();
     const { cardWidth, cardHeight } = this.#layout;
     const sourceLength = piles[move.from].length;
@@ -351,22 +360,39 @@ export class BoardScene extends Phaser.Scene {
       pileLength: destinationLength,
     });
 
-    const radius = cardWidth * 0.07;
-    const lineWidth = Math.max(2, Math.round(3 * this.#pixelRatio));
-    this.#hintGraphics.setAlpha(1);
-    this.#hintGraphics.lineStyle(lineWidth, 0xffd54a, 1);
-    this.#hintGraphics.strokeRoundedRect(sourceTop.x, sourceTop.y, cardWidth, sourceBottom.y - sourceTop.y + cardHeight, radius);
-    this.#hintGraphics.lineStyle(lineWidth, 0x7be0ff, 1);
-    this.#hintGraphics.strokeRoundedRect(destination.x, destination.y, cardWidth, cardHeight, radius);
+    const areas = [
+      {
+        rect: { x: sourceTop.x, y: sourceTop.y, width: cardWidth, height: sourceBottom.y - sourceTop.y + cardHeight },
+        style: { glowColour: 0xffd54a, particleColours: [0xfff4b0, 0xffc928, 0xff7a3d, 0xff3d8b] },
+      },
+      {
+        rect: { x: destination.x, y: destination.y, width: cardWidth, height: cardHeight },
+        style: { glowColour: 0x7be0ff, particleColours: [0xe0fbff, 0x5fd8ff, 0x5b7cff, 0xb05bff] },
+      },
+    ];
 
-    this.tweens.add({
-      targets: this.#hintGraphics,
-      alpha: this.#reduceMotion ? 1 : 0.25,
-      duration: 350,
-      yoyo: true,
-      repeat: 2,
-      onComplete: () => this.#hintGraphics.clear(),
+    this.#hintRings = areas.map(({ rect, style }) =>
+      createHintRing({
+        scene: this,
+        rect,
+        radius: cardWidth * 0.08,
+        pixelRatio: this.#pixelRatio,
+        depth: HINT_DEPTH,
+        reduceMotion: this.#reduceMotion,
+        style,
+      }),
+    );
+    this.#hintTimer = this.time.delayedCall(HINT_SHOW_MS, () => {
+      this.#hintRings.forEach((ring) => ring.fadeOut(HINT_FADE_MS));
+      this.#hintRings = [];
     });
+  }
+
+  #clearHint(): void {
+    this.#hintTimer?.remove();
+    this.#hintTimer = undefined;
+    this.#hintRings.forEach((ring) => ring.destroy());
+    this.#hintRings = [];
   }
 
   #shake(cards: CardId[]): void {
@@ -436,6 +462,8 @@ export class BoardScene extends Phaser.Scene {
     // focus mid-drag). Clear it rather than ignoring this press.
     if (this.#drag) this.#drag = undefined;
 
+    // The player is acting, so the hint has done its job.
+    this.#clearHint();
     const hit = this.#cardAt(pointer.x, pointer.y);
     // Finish any move still animating, so what is on screen matches the game
     // and the end of that animation cannot pull cards out of this drag.
