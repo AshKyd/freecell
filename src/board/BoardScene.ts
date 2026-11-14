@@ -15,8 +15,8 @@ const DEAL_STAGGER_MS = 12;
  * automatic moves home) play one after another, this far apart, so the
  * player can follow them. Each takes `STEP_DURATION_MS`, overlapping the next.
  */
-const STEP_INTERVAL_MS = 110;
-const STEP_DURATION_MS = 160;
+const STEP_INTERVAL_MS = 80;
+const STEP_DURATION_MS = 140;
 /** Picked-up cards grow by this much, from their centre, to look lifted. */
 const LIFT_SCALE = 1.06;
 const LIFT_DURATION_MS = 80;
@@ -87,8 +87,10 @@ export class BoardScene extends Phaser.Scene {
     this.input.on(Phaser.Input.Events.POINTER_DOWN, this.#onPointerDown, this);
     this.input.on(Phaser.Input.Events.POINTER_MOVE, this.#onPointerMove, this);
     this.input.on(Phaser.Input.Events.POINTER_UP, this.#onPointerUp, this);
-    this.input.on(Phaser.Input.Events.POINTER_UP_OUTSIDE, this.#cancelDrag, this);
-    this.input.on(Phaser.Input.Events.GAME_OUT, this.#cancelDrag, this);
+    // Phaser reports a release over anything other than the canvas (an edge
+    // of the board, the toolbar) separately. Treat it as a normal drop: it
+    // lands if the cards overlap a pile, and flies back if not.
+    this.input.on(Phaser.Input.Events.POINTER_UP_OUTSIDE, this.#onPointerUp, this);
 
     this.scale.on(Phaser.Scale.Events.RESIZE, this.#onResize, this);
     this.#unsubscribe = this.#host.subscribe((event) => this.#onBoardEvent(event));
@@ -411,26 +413,33 @@ export class BoardScene extends Phaser.Scene {
 
   // ── Input ──────────────────────────────────────────────────────────────
 
-  /** The card under a point, taking the one drawn on top where fanned cards overlap. */
+  /**
+   * The card drawn under a point, taking the one on top where cards overlap.
+   * Uses where cards are on screen, not where the game says they belong, so
+   * a card still flying into place can be grabbed where the player sees it.
+   */
   #cardAt(x: number, y: number): (CardLocation & { card: CardId }) | undefined {
-    const piles = this.#host.getPiles();
     const { cardWidth, cardHeight } = this.#layout;
-    return piles
-      .flatMap((cards, pile) =>
-        cards.map((card, index) => ({
-          card,
-          pile,
-          index,
-          position: cardPosition({ layout: this.#layout, pile, index, pileLength: cards.length }),
-        })),
-      )
-      .filter(({ position }) => x >= position.x && x < position.x + cardWidth && y >= position.y && y < position.y + cardHeight)
-      .toSorted((a, b) => b.index - a.index)[0];
+    const [topSprite] = this.#sprites
+      .filter((sprite) => sprite.visible && x >= sprite.x && x < sprite.x + cardWidth && y >= sprite.y && y < sprite.y + cardHeight)
+      .toSorted((a, b) => b.depth - a.depth);
+    if (!topSprite) return undefined;
+
+    const card = this.#sprites.indexOf(topSprite);
+    const location = this.#locate(card);
+    return location ? { card, ...location } : undefined;
   }
 
   #onPointerDown(pointer: Phaser.Input.Pointer): void {
-    if (this.#drag) return;
+    // Only one pointer is tracked, so a new press means any earlier one has
+    // ended, even if its release was missed (for example the window lost
+    // focus mid-drag). Clear it rather than ignoring this press.
+    if (this.#drag) this.#drag = undefined;
+
     const hit = this.#cardAt(pointer.x, pointer.y);
+    // Finish any move still animating, so what is on screen matches the game
+    // and the end of that animation cannot pull cards out of this drag.
+    this.#placeCards({ animate: false });
     if (!hit) return;
 
     const piles = this.#host.getPiles();
