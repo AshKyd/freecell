@@ -1,5 +1,5 @@
 import { PILE_COUNT, isTableau } from '../engine/rules.ts';
-import { FACE_HEIGHT, FACE_WIDTH, INDEX_STRIP_RATIO } from './cardFace.ts';
+import { FACE_HEIGHT, FACE_WIDTH, type FaceStyle, INDEX_STRIP_RATIO } from './cardFace.ts';
 
 export interface Rect {
   x: number;
@@ -11,6 +11,8 @@ export interface Rect {
 export interface BoardLayout {
   cardWidth: number;
   cardHeight: number;
+  /** Card face layout for this card size. */
+  faceStyle: FaceStyle;
   /** Top-left corner of each of the 16 pile slots. */
   slots: { x: number; y: number }[];
   /** Lowest y a tableau card may reach before columns are squeezed. */
@@ -29,6 +31,13 @@ const MAX_CARD_WIDTH_CSS = 132;
 const MIN_TABLEAU_CARD_HEIGHTS = 2.75;
 /** Fanned cards never overlap more than this, even in a very long column. */
 const MIN_FAN_RATIO = 0.13;
+/**
+ * Cards at least this wide, in CSS pixels, use the classic face with corner
+ * indices and full court figures. Below it the corner index gets too small
+ * to read, so cards switch to the compact face with a large rank and suit.
+ * Desktops and tablets land above it; phones, in either orientation, below.
+ */
+const CLASSIC_FACE_MIN_WIDTH_CSS = 76;
 
 /**
  * Positions for a board of the given size. All values are in canvas pixels
@@ -69,7 +78,9 @@ export const computeBoardLayout = ({
     y: isTableau(pile) ? tableauY : cellRowY,
   }));
 
-  return { cardWidth, cardHeight, slots, tableauBottom: height - padding };
+  const faceStyle = cardWidth / pixelRatio >= CLASSIC_FACE_MIN_WIDTH_CSS ? 'classic' : 'compact';
+
+  return { cardWidth, cardHeight, faceStyle, slots, tableauBottom: height - padding };
 };
 
 /** Vertical step between fanned cards in a column of `pileLength` cards. */

@@ -27,6 +27,8 @@ Needs Node 25 or newer.
 - `src/board/` holds the Phaser scene. It draws the state and reports what the player did. It has no rules.
   - `boardLayout.ts` works out card size and positions from the screen size.
   - `cardFace.ts` and `cardTextures.ts` draw the cards as SVG at the screen's pixel size.
+  - Large cards (76 CSS px wide or more, usually desktop and tablet) use the `classic` face: corner indices, standard pips, full court figures.
+  - Smaller cards (phones) use the `compact` face: a large rank and suit across the top, so it stays readable.
 - `src/session/` connects the engine, board, stats, saved game and URL.
 - `src/components/` holds the Svelte components.
 - `legacy/` is the old Backbone app, kept for reference.

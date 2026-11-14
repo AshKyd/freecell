@@ -40,6 +40,15 @@ describe('card size', () => {
     const layout = computeBoardLayout({ width: 2560, height: 1400, pixelRatio: 1 });
     expect(layout.cardWidth).toBe(132);
   });
+
+  it('uses classic faces on desktop and compact faces on phones', () => {
+    const styleAt = (width: number, height: number, pixelRatio: number) =>
+      computeBoardLayout({ width: width * pixelRatio, height: height * pixelRatio, pixelRatio }).faceStyle;
+    expect(styleAt(1440, 850, 2)).toBe('classic');
+    expect(styleAt(900, 650, 1)).toBe('classic');
+    expect(styleAt(360, 640, 3)).toBe('compact');
+    expect(styleAt(844, 340, 3)).toBe('compact');
+  });
 });
 
 describe('fanning', () => {

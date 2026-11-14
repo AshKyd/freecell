@@ -3,6 +3,7 @@ import { CARD_COUNT, type CardId } from '../engine/cards.ts';
 import { HOME_CELL_PILES, type Move, PILE_COUNT, type Piles, isHomeCell } from '../engine/rules.ts';
 import type { BoardEvent, BoardHost } from './boardHost.ts';
 import { type BoardLayout, type Rect, cardPosition, computeBoardLayout, dropRect, overlapArea } from './boardLayout.ts';
+import type { FaceStyle } from './cardFace.ts';
 import { cardTextureKey, renderAllCards } from './cardTextures.ts';
 
 const MOVE_DURATION_MS = 170;
@@ -41,8 +42,8 @@ export class BoardScene extends Phaser.Scene {
   #slotGraphics!: Phaser.GameObjects.Graphics;
   #hintGraphics!: Phaser.GameObjects.Graphics;
   #drag: DragState | undefined;
-  /** Pixel width of the card textures currently in use; 0 until the first set is ready. */
-  #textureWidth = 0;
+  /** Size and face style of the card textures in use; undefined until the first set is ready. */
+  #textureSet: { widthPx: number; style: FaceStyle } | undefined;
   #textureBuildId = 0;
   #unsubscribe: (() => void) | undefined;
 
@@ -117,25 +118,24 @@ export class BoardScene extends Phaser.Scene {
    * then swapped to the sharp ones when they are ready.
    */
   async #rebuildTextures(): Promise<void> {
-    const widthPx = this.#layout.cardWidth;
-    const heightPx = this.#layout.cardHeight;
-    if (widthPx === this.#textureWidth) return;
+    const { cardWidth: widthPx, cardHeight: heightPx, faceStyle: style } = this.#layout;
+    const previous = this.#textureSet;
+    if (previous?.widthPx === widthPx && previous.style === style) return;
 
     const buildId = ++this.#textureBuildId;
-    const canvases = await renderAllCards({ widthPx, heightPx });
+    const canvases = await renderAllCards({ widthPx, heightPx, style });
     // A newer resize started while this one was drawing, or the scene has gone.
     if (buildId !== this.#textureBuildId || !this.sys.isActive()) return;
 
-    const previousWidth = this.#textureWidth;
     canvases.forEach((canvas, card) => {
-      const key = cardTextureKey({ card, widthPx });
+      const key = cardTextureKey({ card, widthPx, style });
       if (!this.textures.exists(key)) this.textures.addCanvas(key, canvas);
       this.#sprites[card].setTexture(key).setDisplaySize(this.#layout.cardWidth, this.#layout.cardHeight).setVisible(true);
     });
-    if (previousWidth && previousWidth !== widthPx) {
-      canvases.forEach((_, card) => this.textures.remove(cardTextureKey({ card, widthPx: previousWidth })));
+    if (previous) {
+      canvases.forEach((_, card) => this.textures.remove(cardTextureKey({ card, ...previous })));
     }
-    this.#textureWidth = widthPx;
+    this.#textureSet = { widthPx, style };
   }
 
   // ── Placing cards ──────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ export class BoardScene extends Phaser.Scene {
 
     if (event.type === 'deal') {
       this.#cancelDrag();
-      this.#placeCards({ animate: this.#textureWidth > 0, stagger: DEAL_STAGGER_MS, fromDeck: true });
+      this.#placeCards({ animate: this.#textureSet !== undefined, stagger: DEAL_STAGGER_MS, fromDeck: true });
       return;
     }
     if (event.type === 'moves') {
