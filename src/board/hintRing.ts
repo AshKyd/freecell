@@ -1,16 +1,20 @@
 import Phaser from 'phaser';
 import type { Rect } from './boardLayout.ts';
-import { inflateRect, rectPerimeterPoints } from './perimeter.ts';
+import { type PerimeterPoint, inflateRect, perimeterPointAt, sineFade } from './perimeter.ts';
 
 /** Texture for one particle: a soft white dot, tinted per particle. */
 export const HINT_SPARK_TEXTURE = 'hint-spark';
 
-/** Particles go round each hinted area in about this long. */
-const LAP_MS = 900;
-/** Points round the edge; one is used per particle, in order. */
-const EDGE_POINTS = 72;
-/** Particle comets chasing round each area, evenly spaced. */
-const COMET_COUNT = 2;
+/** A new particle about this often, at a random point on the edge. */
+const EMIT_EVERY_MS = 14;
+/** Each particle lives a random time in this range, fading in and out on a sine curve. */
+const LIFESPAN_MS = { min: 600, max: 1300 };
+/** Clockwise drift along the edge, in CSS px per second, so the swarm swirls round the cards. */
+const SWIRL_SPEED_CSS = { min: 25, max: 90 };
+/** Random sideways drift, in CSS px per second, so particles do not sit exactly on the line. */
+const SCATTER_SPEED_CSS = 18;
+/** Random start offset from the edge, in CSS px. */
+const SCATTER_DISTANCE_CSS = 5;
 /** The glow pulses between these strengths on a sine wave, once per `PULSE_MS` each way. */
 const GLOW_MIN = 1.5;
 const GLOW_MAX = 6;
@@ -48,7 +52,8 @@ export const ensureHintSparkTexture = ({ scene, pixelRatio }: { scene: Phaser.Sc
 /**
  * A hint marker around one area of the board (the cards to pick up, or the
  * place to put them): an outline whose glow pulses on a sine wave, with
- * coloured particles chasing round it. With reduced motion, the outline
+ * coloured particles appearing at random spots on it, swirling round and
+ * fading in and out. With reduced motion, the outline
  * glows steadily and there are no particles.
  */
 export const createHintRing = ({
@@ -82,26 +87,48 @@ export const createHintRing = ({
   }
   if (glow && reduceMotion) glow.outerStrength = (GLOW_MIN + GLOW_MAX) / 2;
 
-  // ── Particles chasing round the outline ──
-  const pointsPerFrame = EDGE_POINTS / (LAP_MS / (1000 / 60));
+  // ── Particles swirling round the outline ──
+  const randomBetween = ({ min, max }: { min: number; max: number }) => min + Math.random() * (max - min);
+  // The zone picks where each particle starts; the emit callback, which runs
+  // straight after for the same particle, uses that spot's edge direction.
+  let lastSpawn: PerimeterPoint = perimeterPointAt({ rect: ringRect, fraction: 0 });
+  const randomEdgeSpot = {
+    getRandomPoint: (point: Phaser.Types.Math.Vector2Like) => {
+      lastSpawn = perimeterPointAt({ rect: ringRect, fraction: Math.random() });
+      const scatter = (Math.random() * 2 - 1) * SCATTER_DISTANCE_CSS * pixelRatio;
+      // Push off the edge at right angles to it.
+      point.x = lastSpawn.x - lastSpawn.tangentY * scatter;
+      point.y = lastSpawn.y + lastSpawn.tangentX * scatter;
+      return point;
+    },
+  };
+  const driftAlongEdge = (particle: Phaser.GameObjects.Particles.Particle) => {
+    const swirl = randomBetween(SWIRL_SPEED_CSS) * pixelRatio;
+    const scatterX = (Math.random() * 2 - 1) * SCATTER_SPEED_CSS * pixelRatio;
+    const scatterY = (Math.random() * 2 - 1) * SCATTER_SPEED_CSS * pixelRatio;
+    particle.velocityX = lastSpawn.tangentX * swirl + scatterX;
+    particle.velocityY = lastSpawn.tangentY * swirl + scatterY;
+  };
+
   const emitters = reduceMotion
     ? []
-    : Array.from({ length: COMET_COUNT }, (_, comet) => {
-        const points = rectPerimeterPoints({ rect: ringRect, count: EDGE_POINTS, startFraction: comet / COMET_COUNT });
-        return scene.add
+    : [
+        scene.add
           .particles(0, 0, HINT_SPARK_TEXTURE, {
-            emitZone: { type: 'edge', source: { getPoints: () => points }, quantity: EDGE_POINTS },
-            frequency: 1000 / 60,
-            quantity: Math.max(1, Math.round(pointsPerFrame)),
-            lifespan: { min: 380, max: 650 },
-            speed: { min: 4 * pixelRatio, max: 22 * pixelRatio },
-            scale: { start: 1, end: 0 },
-            alpha: { start: 1, end: 0 },
+            emitZone: { type: 'random', source: randomEdgeSpot },
+            frequency: EMIT_EVERY_MS,
+            quantity: 1,
+            lifespan: LIFESPAN_MS,
+            speed: 0,
+            scale: { min: 0.45, max: 1.25 },
+            // Fade in, then out, along a sine curve over each particle's own life.
+            alpha: { onEmit: () => 0, onUpdate: (_particle, _key, lifeProgress) => sineFade(lifeProgress) },
             color: style.particleColours,
             blendMode: Phaser.BlendModes.ADD,
+            emitCallback: driftAlongEdge,
           })
-          .setDepth(depth + 1);
-      });
+          .setDepth(depth + 1),
+      ];
 
   const destroy = () => {
     scene.tweens.killTweensOf(outline);

@@ -1,29 +1,28 @@
 import type { Rect } from './boardLayout.ts';
 
-export interface Point {
+export interface PerimeterPoint {
   x: number;
   y: number;
+  /** Unit vector pointing clockwise along the edge at this point. */
+  tangentX: number;
+  tangentY: number;
 }
 
 /**
- * `count` points evenly spaced clockwise around a rectangle's edge, starting
- * at the top-left corner, or `startFraction` of the way round from it.
- * Used as an edge emit zone for hint particles: emitting at each point in
- * turn makes the particles chase around the cards.
+ * The point `fraction` (0 to 1) of the way clockwise round a rectangle's
+ * edge from its top-left corner, with the edge direction there. Hint
+ * particles start at random points from this and drift along the edge, so
+ * they swirl round the cards without following a fixed order.
  */
-export const rectPerimeterPoints = ({ rect, count, startFraction = 0 }: { rect: Rect; count: number; startFraction?: number }): Point[] => {
+export const perimeterPointAt = ({ rect, fraction }: { rect: Rect; fraction: number }): PerimeterPoint => {
   const { x, y, width, height } = rect;
   const perimeter = 2 * (width + height);
+  const along = (((fraction * perimeter) % perimeter) + perimeter) % perimeter;
 
-  const pointAt = (distance: number): Point => {
-    const along = ((distance % perimeter) + perimeter) % perimeter;
-    if (along < width) return { x: x + along, y };
-    if (along < width + height) return { x: x + width, y: y + along - width };
-    if (along < width * 2 + height) return { x: x + width - (along - width - height), y: y + height };
-    return { x, y: y + height - (along - width * 2 - height) };
-  };
-
-  return Array.from({ length: count }, (_, index) => pointAt(perimeter * (startFraction + index / count)));
+  if (along < width) return { x: x + along, y, tangentX: 1, tangentY: 0 };
+  if (along < width + height) return { x: x + width, y: y + along - width, tangentX: 0, tangentY: 1 };
+  if (along < width * 2 + height) return { x: x + width - (along - width - height), y: y + height, tangentX: -1, tangentY: 0 };
+  return { x, y: y + height - (along - width * 2 - height), tangentX: 0, tangentY: -1 };
 };
 
 /** A rectangle grown by `by` on every side. */
@@ -33,3 +32,6 @@ export const inflateRect = ({ rect, by }: { rect: Rect; by: number }): Rect => (
   width: rect.width + by * 2,
   height: rect.height + by * 2,
 });
+
+/** Brightness over a particle's life: 0 at birth, 1 halfway, back to 0 at death, along a sine curve. */
+export const sineFade = (lifeProgress: number): number => Math.sin(Math.PI * Math.min(1, Math.max(0, lifeProgress)));
