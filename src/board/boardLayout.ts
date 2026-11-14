@@ -116,6 +116,20 @@ export const dropRect = ({ layout, pile }: { layout: BoardLayout; pile: number }
   return { x: slot.x, y: slot.y, width: layout.cardWidth, height: Math.max(height, layout.cardHeight) };
 };
 
+/**
+ * The pile a dropped card is over: the one its rectangle overlaps most.
+ * Legality is checked by the caller afterwards on purpose. Picking the best
+ * *legal* pile instead would send cards dropped on an invalid spot to a
+ * neighbouring pile they only brushed, which looks like they jumped.
+ */
+export const dropTargetPile = ({ layout, draggedRect }: { layout: BoardLayout; draggedRect: Rect }): number | undefined => {
+  const [best] = layout.slots
+    .map((_, pile) => ({ pile, overlap: overlapArea(draggedRect, dropRect({ layout, pile })) }))
+    .filter(({ overlap }) => overlap > 0)
+    .toSorted((a, b) => b.overlap - a.overlap);
+  return best?.pile;
+};
+
 export const overlapArea = (a: Rect, b: Rect): number => {
   const overlapWidth = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
   const overlapHeight = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);

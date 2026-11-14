@@ -1,8 +1,8 @@
 import Phaser from 'phaser';
 import { CARD_COUNT, type CardId } from '../engine/cards.ts';
-import { FREE_CELL_PILES, HOME_CELL_PILES, type Move, PILE_COUNT, type Piles, isHomeCell, movePiles } from '../engine/rules.ts';
+import { FREE_CELL_PILES, HOME_CELL_PILES, type Move, type Piles, isHomeCell, movePiles } from '../engine/rules.ts';
 import type { BoardEvent, BoardHost } from './boardHost.ts';
-import { type BoardLayout, type Rect, cardPosition, computeBoardLayout, dropRect, overlapArea } from './boardLayout.ts';
+import { type BoardLayout, type Rect, cardPosition, computeBoardLayout, dropTargetPile } from './boardLayout.ts';
 import type { FaceStyle } from './cardFace.ts';
 import { cardTextureKey, renderAllCards } from './cardTextures.ts';
 
@@ -585,19 +585,12 @@ export class BoardScene extends Phaser.Scene {
       return;
     }
 
-    // Drop on the legal pile the dragged card covers most. Preferring legal
-    // piles makes a drop that straddles two columns land where it can.
-    const draggedRect = this.#draggedRect(pointer, drag);
-    const [bestTarget] = Array.from({ length: PILE_COUNT }, (_, to) => ({
-      move: { from: drag.from, to, count: drag.runCount },
-      overlap: overlapArea(draggedRect, dropRect({ layout: this.#layout, pile: to })),
-    }))
-      .filter(({ move, overlap }) => overlap > 0 && this.#host.canDrop(move))
-      .toSorted((a, b) => b.overlap - a.overlap);
-
-    const wasPlayed = bestTarget ? this.#host.play(bestTarget.move) : false;
-    // Not played: fly the cards back to where they were.
-    if (!wasPlayed) this.#placeCards({ animate: true, order: [] });
+    // Drop on the pile the cards are mostly over. If that move is not allowed,
+    // every card (held and parked in free cells) flies back to where it was.
+    const to = dropTargetPile({ layout: this.#layout, draggedRect: this.#draggedRect(pointer, drag) });
+    const move = to === undefined ? undefined : { from: drag.from, to, count: drag.runCount };
+    const wasPlayed = move !== undefined && this.#host.canDrop(move) && this.#host.play(move);
+    if (!wasPlayed) this.#placeCards({ animate: true });
   }
 
   #cancelDrag(): void {

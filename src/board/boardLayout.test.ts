@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cardPosition, computeBoardLayout, dropRect, fanStep, overlapArea } from './boardLayout.ts';
+import { cardPosition, computeBoardLayout, dropRect, dropTargetPile, fanStep, overlapArea } from './boardLayout.ts';
 
 const viewports = [
   { name: 'portrait phone', width: 360, height: 640, pixelRatio: 3 },
@@ -61,6 +61,28 @@ describe('fanning', () => {
 
   it('stacks cell piles in place', () => {
     expect(cardPosition({ layout, pile: 12, index: 5, pileLength: 6 })).toEqual(layout.slots[12]);
+  });
+});
+
+describe('dropTargetPile', () => {
+  const layout = computeBoardLayout({ width: 1440, height: 900, pixelRatio: 1 });
+  const cardAt = (x: number, y: number) => ({ x, y, width: layout.cardWidth, height: layout.cardHeight });
+  const columnStep = layout.slots[1].x - layout.slots[0].x;
+
+  it('picks the pile the card is mostly over, even when a neighbour is also touched', () => {
+    const mostlyOverColumn3 = cardAt(layout.slots[3].x + columnStep * 0.3, layout.slots[3].y + 40);
+    expect(dropTargetPile({ layout, draggedRect: mostlyOverColumn3 })).toBe(3);
+    const mostlyOverColumn4 = cardAt(layout.slots[3].x + columnStep * 0.7, layout.slots[3].y + 40);
+    expect(dropTargetPile({ layout, draggedRect: mostlyOverColumn4 })).toBe(4);
+  });
+
+  it('tells free cells and home cells apart from the columns below them', () => {
+    expect(dropTargetPile({ layout, draggedRect: cardAt(layout.slots[9].x, layout.slots[9].y) })).toBe(9);
+    expect(dropTargetPile({ layout, draggedRect: cardAt(layout.slots[14].x + 10, layout.slots[14].y + 10) })).toBe(14);
+  });
+
+  it('finds nothing when dropped off the board', () => {
+    expect(dropTargetPile({ layout, draggedRect: cardAt(-500, -500) })).toBeUndefined();
   });
 });
 
