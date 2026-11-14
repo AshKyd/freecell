@@ -1,35 +1,38 @@
 import Phaser from 'phaser';
 import type { Rect } from './boardLayout.ts';
-import { inflateRect, perimeterPointAt, sineFade } from './perimeter.ts';
+import { type ParticleTraits, particleAlpha, particleScale, randomTraits } from './organicPulse.ts';
+import { inflateRect, perimeterPointAt } from './perimeter.ts';
 
-/** Texture for one flame particle: a soft white blob, tinted through the flame colours as it rises. */
-export const HINT_FLAME_TEXTURE = 'hint-flame';
+/** Texture for one particle: a soft white blob, tinted per particle. */
+export const HINT_PARTICLE_TEXTURE = 'hint-particle';
 
-/** Flame particles per second for each CSS px of edge, so a long run burns as densely as one card. */
-const PARTICLES_PER_SECOND_PER_CSS_PX = 0.45;
-const EMIT_EVERY_MS = 12;
-/** Each flame lives a random time in this range, fading in and out on a sine curve. */
-const LIFESPAN_MS = { min: 450, max: 1000 };
-/** Upward speed at birth and upward pull while alive, in CSS px per second (and per second²). */
-const RISE_SPEED_CSS = { min: 35, max: 115 };
-const RISE_PULL_CSS = 60;
-/** Random sideways flicker at birth, in CSS px per second. */
-const FLICKER_SPEED_CSS = 14;
+/** Particles per second for each CSS px of outline, so a long run is wrapped as densely as one card. */
+const PARTICLES_PER_SECOND_PER_CSS_PX = 0.28;
+const EMIT_EVERY_MS = 16;
+/** Each particle lives a random time in this range. */
+const LIFESPAN_MS = { min: 500, max: 1400 };
+/** Particles appear up to this far either side of the outline, in CSS px. */
+const SCATTER_CSS = 7;
+/** Slow drift along the outline (either way) and outwards, in CSS px per second. */
+const DRIFT_ALONG_CSS = 22;
+const DRIFT_OUT_CSS = 6;
+const PEAK_SCALE = { min: 0.25, max: 0.8 };
+const TWINKLE_CYCLES = { min: 0.8, max: 2.5 };
 /**
- * Where flames start, measured from the card edge in CSS px: positive is in
- * behind the card, negative is just outside it. Mostly behind, so flames
- * look like they come from behind the card and lick out round its edges.
+ * How busy the swarm is rises and falls on a slow sine wave, with a random
+ * period per hint, so particles come in waves instead of a steady stream.
  */
-const SPAWN_DEPTH_CSS = { min: -3, max: 10 };
-/** Backlight glow behind the cards, pulsing between these strengths on a sine wave. */
-const GLOW_MIN = 2;
-const GLOW_MAX = 7;
+const SWELL_MS = { min: 700, max: 1300 };
+const SWELL_QUIETEST = 0.3;
+/** Outline glow strength, pulsing on a sine wave. */
+const GLOW_MIN = 1.5;
+const GLOW_MAX = 6;
 const PULSE_MS = 550;
 
 export interface HintRingStyle {
-  /** Colour of the backlight glow. */
+  /** Colour of the glowing outline. */
   glowColour: number;
-  /** Flame colours from hottest (birth) to coolest (death). */
+  /** Particle colours over each particle's life. */
   particleColours: number[];
 }
 
@@ -40,27 +43,31 @@ export interface HintRing {
   destroy(): void;
 }
 
-/** Draws the flame texture once per scene. */
-export const ensureHintFlameTexture = ({ scene, pixelRatio }: { scene: Phaser.Scene; pixelRatio: number }): void => {
-  if (scene.textures.exists(HINT_FLAME_TEXTURE)) return;
-  const size = Math.round(28 * pixelRatio);
+/** Draws the particle texture once per scene. */
+export const ensureHintParticleTexture = ({ scene, pixelRatio }: { scene: Phaser.Scene; pixelRatio: number }): void => {
+  if (scene.textures.exists(HINT_PARTICLE_TEXTURE)) return;
+  const size = Math.round(24 * pixelRatio);
   const centre = size / 2;
   const graphics = scene.add.graphics();
   // Many faint circles stacked from large to small build a soft radial falloff.
   Array.from({ length: 10 }, (_, ring) => 1 - ring * 0.09).forEach((radiusFraction) => {
-    graphics.fillStyle(0xffffff, 0.12);
+    graphics.fillStyle(0xffffff, 0.14);
     graphics.fillCircle(centre, centre, centre * radiusFraction);
   });
-  graphics.generateTexture(HINT_FLAME_TEXTURE, size, size);
+  graphics.generateTexture(HINT_PARTICLE_TEXTURE, size, size);
   graphics.destroy();
 };
 
+const randomBetween = ({ min, max }: { min: number; max: number }): number => min + Math.random() * (max - min);
+const randomSigned = (size: number): number => (Math.random() * 2 - 1) * size;
+
 /**
- * A hint marker for one area of the board (the cards to pick up, or the
- * place to put them): flames rising from behind the cards and licking out
- * round their edges, over a backlight glow that pulses on a sine wave.
- * Drawn below the cards, so it is only seen around them. With reduced
- * motion there are no flames and the glow is steady.
+ * A hint marker wrapped round one area of the board (the cards to pick
+ * up, or the place to put them), drawn over the cards: an outline whose
+ * glow pulses on a sine wave, and soft particles that pop up at random
+ * spots round it. Each particle blooms and fades on its own sine curve
+ * with a shimmer, and the swarm swells and quietens on a slow sine wave.
+ * With reduced motion the glow is steady and there are no particles.
  */
 export const createHintRing = ({
   scene,
@@ -75,76 +82,103 @@ export const createHintRing = ({
   rect: Rect;
   radius: number;
   pixelRatio: number;
-  /** Below the cards' depth, so the effect shows only around them. */
   depth: number;
   reduceMotion: boolean;
   style: HintRingStyle;
 }): HintRing => {
   const px = (cssPixels: number) => cssPixels * pixelRatio;
+  const outlineRect = inflateRect({ rect, by: px(3) });
 
-  // ── Backlight glow ──
-  const glowRect = inflateRect({ rect, by: px(1) });
-  const backlight = scene.add.graphics().setDepth(depth);
-  backlight.fillStyle(style.glowColour, 1);
-  backlight.fillRoundedRect(glowRect.x, glowRect.y, glowRect.width, glowRect.height, radius);
+  // ── Glowing outline ──
+  const outline = scene.add.graphics().setDepth(depth);
+  outline.lineStyle(Math.max(2, Math.round(px(2))), style.glowColour, 1);
+  outline.strokeRoundedRect(outlineRect.x, outlineRect.y, outlineRect.width, outlineRect.height, radius);
 
-  // Filters need WebGL; on the canvas renderer the plain backlight is shown.
-  const glow = scene.renderer.type === Phaser.WEBGL ? backlight.enableFilters().filters?.external.addGlow(style.glowColour, GLOW_MIN, 0) : undefined;
+  // Filters need WebGL; on the canvas renderer the plain outline is shown.
+  const glow = scene.renderer.type === Phaser.WEBGL ? outline.enableFilters().filters?.external.addGlow(style.glowColour, GLOW_MIN, 0) : undefined;
   if (glow && !reduceMotion) {
     scene.tweens.add({ targets: glow, outerStrength: GLOW_MAX, duration: PULSE_MS, ease: 'Sine.easeInOut', yoyo: true, repeat: -1 });
   }
   if (glow && reduceMotion) glow.outerStrength = (GLOW_MIN + GLOW_MAX) / 2;
 
-  // ── Flames ──
-  const spawnRect = inflateRect({ rect, by: px(2) });
-  const flameBase = {
+  if (reduceMotion) {
+    return {
+      destroy: () => outline.destroy(),
+      fadeOut: (fadeMs) => scene.tweens.add({ targets: outline, alpha: 0, duration: fadeMs, onComplete: () => outline.destroy() }),
+    };
+  }
+
+  // ── Particles wrapped round the outline ──
+  // Each particle's random traits, set as it is emitted. Phaser reuses particle objects, so this is overwritten each time.
+  const traitsByParticle = new WeakMap<Phaser.GameObjects.Particles.Particle, ParticleTraits>();
+  const fallbackTraits = randomTraits({ peakScale: PEAK_SCALE, twinkleCycles: TWINKLE_CYCLES });
+  const traitsOf = (particle: Phaser.GameObjects.Particles.Particle) => traitsByParticle.get(particle) ?? fallbackTraits;
+
+  // The zone picks where each particle appears; the emit callback, which
+  // runs straight after for the same particle, uses that spot's edge direction.
+  let lastSpot = perimeterPointAt({ rect: outlineRect, fraction: 0 });
+  const randomSpotNearOutline = {
     getRandomPoint: (point: Phaser.Types.Math.Vector2Like) => {
-      const edge = perimeterPointAt({ rect: spawnRect, fraction: Math.random() });
-      const inward = px(SPAWN_DEPTH_CSS.min + Math.random() * (SPAWN_DEPTH_CSS.max - SPAWN_DEPTH_CSS.min));
+      lastSpot = perimeterPointAt({ rect: outlineRect, fraction: Math.random() });
+      const offset = randomSigned(px(SCATTER_CSS));
       // (-tangentY, tangentX) points into the rectangle for a clockwise edge.
-      point.x = edge.x - edge.tangentY * inward;
-      point.y = edge.y + edge.tangentX * inward;
+      point.x = lastSpot.x - lastSpot.tangentY * offset;
+      point.y = lastSpot.y + lastSpot.tangentX * offset;
       return point;
     },
   };
-  const perimeterCss = (2 * (spawnRect.width + spawnRect.height)) / pixelRatio;
-  const perEmit = Math.max(1, Math.round((perimeterCss * PARTICLES_PER_SECOND_PER_CSS_PX * EMIT_EVERY_MS) / 1000));
+  const onEmitted = (particle: Phaser.GameObjects.Particles.Particle) => {
+    traitsByParticle.set(particle, randomTraits({ peakScale: PEAK_SCALE, twinkleCycles: TWINKLE_CYCLES }));
+    const along = randomSigned(px(DRIFT_ALONG_CSS));
+    const outward = Math.random() * px(DRIFT_OUT_CSS);
+    particle.velocityX = lastSpot.tangentX * along + lastSpot.tangentY * outward;
+    particle.velocityY = lastSpot.tangentY * along - lastSpot.tangentX * outward;
+  };
 
-  const emitters = reduceMotion
-    ? []
-    : [
-        scene.add
-          .particles(0, 0, HINT_FLAME_TEXTURE, {
-            emitZone: { type: 'random', source: flameBase },
-            frequency: EMIT_EVERY_MS,
-            quantity: perEmit,
-            lifespan: LIFESPAN_MS,
-            speedX: { min: -px(FLICKER_SPEED_CSS), max: px(FLICKER_SPEED_CSS) },
-            speedY: { min: -px(RISE_SPEED_CSS.max), max: -px(RISE_SPEED_CSS.min) },
-            gravityY: -px(RISE_PULL_CSS),
-            // Flames start full and burn down to a wisp.
-            scale: { start: 1.1, end: 0.15, ease: 'Quad.easeIn' },
-            // Fade in, then out, along a sine curve over each flame's own life.
-            alpha: { onEmit: () => 0, onUpdate: (_particle, _key, lifeProgress) => sineFade(lifeProgress) * 0.9 },
-            color: style.particleColours,
-            blendMode: Phaser.BlendModes.ADD,
-          })
-          .setDepth(depth + 1),
-      ];
+  const outlineLengthCss = (2 * (outlineRect.width + outlineRect.height)) / pixelRatio;
+  const busiestEmitEveryMs = 1000 / (outlineLengthCss * PARTICLES_PER_SECOND_PER_CSS_PX) || EMIT_EVERY_MS;
+
+  const emitter = scene.add
+    .particles(0, 0, HINT_PARTICLE_TEXTURE, {
+      emitZone: { type: 'random', source: randomSpotNearOutline },
+      frequency: busiestEmitEveryMs,
+      quantity: 1,
+      lifespan: LIFESPAN_MS,
+      speed: 0,
+      scale: { onEmit: () => 0, onUpdate: (particle, _key, lifeProgress) => particleScale({ lifeProgress, traits: traitsOf(particle) }) },
+      alpha: { onEmit: () => 0, onUpdate: (particle, _key, lifeProgress) => particleAlpha({ lifeProgress, traits: traitsOf(particle) }) },
+      color: style.particleColours,
+      blendMode: Phaser.BlendModes.ADD,
+      emitCallback: onEmitted,
+    })
+    .setDepth(depth + 1);
+
+  // Swell and quieten: slow the emission rate down and up on a sine wave.
+  const swell = { level: 1 };
+  scene.tweens.add({
+    targets: swell,
+    level: 0,
+    duration: randomBetween(SWELL_MS),
+    ease: 'Sine.easeInOut',
+    yoyo: true,
+    repeat: -1,
+    onUpdate: () => emitter.setFrequency(busiestEmitEveryMs / (SWELL_QUIETEST + (1 - SWELL_QUIETEST) * swell.level)),
+  });
 
   const destroy = () => {
-    scene.tweens.killTweensOf(backlight);
+    scene.tweens.killTweensOf([outline, swell, emitter]);
     if (glow) scene.tweens.killTweensOf(glow);
-    backlight.destroy();
-    emitters.forEach((emitter) => emitter.destroy());
+    outline.destroy();
+    emitter.destroy();
   };
 
   return {
     destroy,
     fadeOut: (fadeMs) => {
-      // Stop making flames; those already burning finish their short life.
-      emitters.forEach((emitter) => emitter.stop());
-      scene.tweens.add({ targets: [backlight, ...emitters], alpha: 0, duration: fadeMs, onComplete: destroy });
+      // Stop making particles; those already showing finish their short life.
+      emitter.stop();
+      scene.tweens.killTweensOf(swell);
+      scene.tweens.add({ targets: [outline, emitter], alpha: 0, duration: fadeMs, onComplete: destroy });
     },
   };
 };

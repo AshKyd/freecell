@@ -11,8 +11,8 @@ export interface PerimeterPoint {
 /**
  * The point `fraction` (0 to 1) of the way clockwise round a rectangle's
  * edge from its top-left corner, with the edge direction there. Hint
- * particles start at random points from this and drift along the edge, so
- * they swirl round the cards without following a fixed order.
+ * particles appear at random points from this and drift along the edge,
+ * so they wrap round the cards without following a fixed order.
  */
 export const perimeterPointAt = ({ rect, fraction }: { rect: Rect; fraction: number }): PerimeterPoint => {
   const { x, y, width, height } = rect;
@@ -32,6 +32,3 @@ export const inflateRect = ({ rect, by }: { rect: Rect; by: number }): Rect => (
   width: rect.width + by * 2,
   height: rect.height + by * 2,
 });
-
-/** Brightness over a particle's life: 0 at birth, 1 halfway, back to 0 at death, along a sine curve. */
-export const sineFade = (lifeProgress: number): number => Math.sin(Math.PI * Math.min(1, Math.max(0, lifeProgress)));

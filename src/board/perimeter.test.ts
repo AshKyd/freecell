@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inflateRect, perimeterPointAt, sineFade } from './perimeter.ts';
+import { inflateRect, perimeterPointAt } from './perimeter.ts';
 
 const rect = { x: 10, y: 20, width: 100, height: 50 };
 
@@ -21,15 +21,6 @@ describe('perimeterPointAt', () => {
 
   it('wraps fractions outside 0 to 1', () => {
     expect(perimeterPointAt({ rect, fraction: 1.4 })).toEqual(perimeterPointAt({ rect, fraction: 0.4 }));
-  });
-});
-
-describe('sineFade', () => {
-  it('fades in and out along a sine curve', () => {
-    expect(sineFade(0)).toBe(0);
-    expect(sineFade(0.5)).toBe(1);
-    expect(sineFade(1)).toBeCloseTo(0);
-    expect(sineFade(0.25)).toBeCloseTo(Math.SQRT1_2);
   });
 });
 

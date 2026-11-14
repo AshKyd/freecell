@@ -4,7 +4,7 @@ import { FREE_CELL_PILES, HOME_CELL_PILES, type Move, type Piles, isHomeCell, mo
 import type { BoardEvent, BoardHost } from './boardHost.ts';
 import { type BoardLayout, type Rect, cardPosition, computeBoardLayout, dropTargetPile } from './boardLayout.ts';
 import type { FaceStyle } from './cardFace.ts';
-import { type HintRing, createHintRing, ensureHintFlameTexture } from './hintRing.ts';
+import { type HintRing, createHintRing, ensureHintParticleTexture } from './hintRing.ts';
 import { cardTextureKey, renderAllCards } from './cardTextures.ts';
 
 const MOVE_DURATION_MS = 170;
@@ -23,13 +23,10 @@ const LIFT_SCALE = 1.06;
 const LIFT_DURATION_MS = 80;
 /** Cards in flight are drawn above everything at rest. */
 const FLYING_DEPTH = 1000;
-/**
- * Draw order below the cards (which sit at 0 and up): empty slot outlines
- * at the back, then hint flames, so flames show round the cards but never
- * over them.
- */
+/** Empty slot outlines sit behind all cards (which are at 0 and up). */
 const SLOT_DEPTH = -10;
-const HINT_DEPTH = -5;
+/** Hints wrap over cards at rest and in flight, but stay under cards being dragged. */
+const HINT_DEPTH = 1500;
 /** How long a hint shows before fading, and how long the fade takes. */
 const HINT_SHOW_MS = 2600;
 const HINT_FADE_MS = 350;
@@ -88,7 +85,7 @@ export class BoardScene extends Phaser.Scene {
   create(): void {
     this.#layout = this.#computeLayout();
     this.#slotGraphics = this.add.graphics().setDepth(SLOT_DEPTH);
-    ensureHintFlameTexture({ scene: this, pixelRatio: this.#pixelRatio });
+    ensureHintParticleTexture({ scene: this, pixelRatio: this.#pixelRatio });
 
     // Cards start hidden and appear once their textures have been drawn.
     this.#sprites = Array.from({ length: CARD_COUNT }, (_, card) =>
@@ -347,8 +344,8 @@ export class BoardScene extends Phaser.Scene {
   }
 
   /**
-   * Sets the cards to pick up on fire (orange flames) and where to put them
-   * (blue flames), burning from behind the cards over a pulsing backlight,
+   * Wraps the cards to pick up (warm colours) and where to put them (cool
+   * colours) in a pulsing glow outline with particles twinkling round it,
    * then fades out. Any press or game change clears them sooner.
    */
   #showHint(move: Move): void {
@@ -369,13 +366,13 @@ export class BoardScene extends Phaser.Scene {
     const areas = [
       {
         rect: { x: sourceTop.x, y: sourceTop.y, width: cardWidth, height: sourceBottom.y - sourceTop.y + cardHeight },
-        // Fire: white-hot core cooling through yellow and orange to deep red.
-        style: { glowColour: 0xff8a1f, particleColours: [0xfff6c2, 0xffc23a, 0xff6a1a, 0xd62a12, 0x5a0a0a] },
+        // Warm: pale gold through amber to coral.
+        style: { glowColour: 0xffb02e, particleColours: [0xfff6c2, 0xffd54a, 0xff9a3d, 0xff5a5a] },
       },
       {
         rect: { x: destination.x, y: destination.y, width: cardWidth, height: cardHeight },
-        // Blue fire for the destination, so the two ends of the move are told apart.
-        style: { glowColour: 0x3f9bff, particleColours: [0xeafcff, 0x8be6ff, 0x3f8bff, 0x4b2fd6, 0x1a0a5a] },
+        // Cool for the destination, so the two ends of the move are told apart.
+        style: { glowColour: 0x5fc8ff, particleColours: [0xeafcff, 0x8be6ff, 0x5b9bff, 0xa070ff] },
       },
     ];
 
