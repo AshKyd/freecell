@@ -1,0 +1,95 @@
+:root {
+  --felt: #17603f;
+  --felt-dark: #0d3d28;
+  --bar: rgb(0 0 0 / 28%);
+  --surface: #1d2a24;
+  --surface-hover: rgb(255 255 255 / 9%);
+  --border: rgb(255 255 255 / 14%);
+  --text: #f3f6f4;
+  --accent: #ffd54a;
+  --accent-text: #2a2200;
+  --danger: #ff9d9d;
+  --badge: #ffd54a;
+  --badge-text: #2a2200;
+
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  /* The game fills the screen; stop pull-to-refresh and rubber-banding mid drag. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  background: radial-gradient(ellipse at 50% 30%, var(--felt), var(--felt-dark));
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Buttons shared by the bars and dialogs ───────────────────────────── */
+
+.bar-button,
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  /* 44px: the smallest comfortable touch target. */
+  min-height: 2.75rem;
+  padding: 0 0.9rem;
+  border: 0;
+  border-radius: 0.6rem;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.bar-button {
+  background: none;
+}
+
+.bar-button:hover:not(:disabled),
+.secondary-button:hover {
+  background: var(--surface-hover);
+}
+
+.bar-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.secondary-button {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* Very narrow phones: keep the icons, drop the labels in the top bar's menu button. */
+@media (max-width: 22rem) {
+  .bar-button {
+    padding: 0 0.6rem;
+  }
+}
