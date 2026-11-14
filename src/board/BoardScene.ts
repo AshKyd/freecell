@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { CARD_COUNT, type CardId } from '../engine/cards.ts';
-import { HOME_CELL_PILES, type Move, PILE_COUNT, type Piles, isHomeCell, movePiles } from '../engine/rules.ts';
+import { FREE_CELL_PILES, HOME_CELL_PILES, type Move, PILE_COUNT, type Piles, isHomeCell, movePiles } from '../engine/rules.ts';
 import type { BoardEvent, BoardHost } from './boardHost.ts';
 import { type BoardLayout, type Rect, cardPosition, computeBoardLayout, dropRect, overlapArea } from './boardLayout.ts';
 import type { FaceStyle } from './cardFace.ts';
@@ -17,8 +17,6 @@ const DEAL_STAGGER_MS = 12;
  */
 const STEP_INTERVAL_MS = 110;
 const STEP_DURATION_MS = 160;
-/** Time to return dragged cards to their pile before the steps start. */
-const SETTLE_MS = 90;
 /** Picked-up cards grow by this much, from their centre, to look lifted. */
 const LIFT_SCALE = 1.06;
 const LIFT_DURATION_MS = 80;
@@ -35,8 +33,14 @@ interface CardLocation {
 
 interface DragState {
   from: number;
-  /** Cards being dragged, bottom of the run first. */
+  /**
+   * Cards following the pointer, bottom of the run first. When a run is
+   * picked up its top cards go to the free cells straight away (as real
+   * Freecell moves them), so this is only the part of the run left over.
+   */
   cards: CardId[];
+  /** Length of the whole run being moved, including cards parked in free cells. */
+  runCount: number;
   startX: number;
   startY: number;
   /** Offset from the pointer to the top-left of the bottom dragged card. */
@@ -269,6 +273,8 @@ export class BoardScene extends Phaser.Scene {
       return;
     }
     if (event.type === 'reject') {
+      // Return any cards parked on pick-up, then shake the ones that could not move.
+      this.#placeCards({ animate: true });
       this.#shake(event.cards);
       return;
     }
@@ -280,8 +286,9 @@ export class BoardScene extends Phaser.Scene {
    * the free cells and the automatic moves home follow on.
    *
    * Each step's target comes from replaying the steps on the `before`
-   * piles. Cards that are out of place when it starts (a dragged run that
-   * was dropped) first go back to their pile. When the last step lands,
+   * piles. Cards fly from wherever they are on screen, so a run whose top
+   * was parked in the free cells on pick-up, and whose rest was dropped
+   * mid-board, carries on from there. When the last step lands,
    * `#placeCards` tidies up depths and any change in how columns fan.
    */
   #animateSteps({ before, steps }: { before: Piles; steps: Move[] }): void {
@@ -291,21 +298,13 @@ export class BoardScene extends Phaser.Scene {
     }
     this.#stepsFinish?.remove();
     const restScale = this.#cardScale();
-
-    // Settle cards that are not where `before` has them.
-    const outOfPlace = before.flatMap((cards, pile) =>
-      cards
-        .map((card, index) => ({ sprite: this.#sprites[card], target: cardPosition({ layout: this.#layout, pile, index, pileLength: cards.length }), index }))
-        .filter(({ sprite, target }) => sprite.x !== target.x || sprite.y !== target.y || sprite.scaleX !== restScale.scaleX),
-    );
-    outOfPlace.forEach(({ sprite, target }) => {
-      this.tweens.killTweensOf(sprite);
-      this.tweens.add({ targets: sprite, x: target.x, y: target.y, ...restScale, duration: SETTLE_MS, ease: 'Cubic.easeOut' });
-    });
-    const firstStepDelay = outOfPlace.length > 0 ? SETTLE_MS : 0;
-
-    // Then each step in turn.
     const snapshots = steps.reduce<Piles[]>((list, move) => [...list, movePiles({ piles: list.at(-1) as Piles, move })], [before]);
+    const cardsMovedBy = (move: Move, stepIndex: number) => snapshots[stepIndex + 1][move.to].slice(-move.count);
+
+    // A quick drop can land before parking on pick-up has finished. Stop
+    // those tweens first (before scheduling any step, as a card may move
+    // more than once) and let the steps carry on from where the cards are.
+    new Set(steps.flatMap(cardsMovedBy)).forEach((card) => this.tweens.killTweensOf(this.#sprites[card]));
     steps.forEach((move, stepIndex) => {
       const after = snapshots[stepIndex + 1];
       const destination = after[move.to];
@@ -319,7 +318,7 @@ export class BoardScene extends Phaser.Scene {
           x: target.x,
           y: target.y,
           ...restScale,
-          delay: firstStepDelay + stepIndex * STEP_INTERVAL_MS,
+          delay: stepIndex * STEP_INTERVAL_MS,
           duration: STEP_DURATION_MS,
           ease: 'Cubic.easeInOut',
           // Each step lands on top of the ones before it.
@@ -328,7 +327,7 @@ export class BoardScene extends Phaser.Scene {
       });
     });
 
-    const totalMs = firstStepDelay + (steps.length - 1) * STEP_INTERVAL_MS + STEP_DURATION_MS;
+    const totalMs = (steps.length - 1) * STEP_INTERVAL_MS + STEP_DURATION_MS;
     this.#stepsFinish = this.time.delayedCall(totalMs, () => {
       this.#stepsFinish = undefined;
       this.#placeCards({ animate: true });
@@ -442,26 +441,69 @@ export class BoardScene extends Phaser.Scene {
       return;
     }
 
+    const runCards = pileCards.slice(hit.index);
+    const parkedCards = this.#parkInFreeCells(runCards);
+    const heldCards = runCards.slice(0, runCards.length - parkedCards.length);
+
     const position = cardPosition({ layout: this.#layout, ...hit, pileLength: pileCards.length });
     this.#drag = {
       from: hit.pile,
-      cards: pileCards.slice(hit.index),
+      cards: heldCards,
+      runCount: runCards.length,
       startX: pointer.x,
       startY: pointer.y,
       grabOffsetX: position.x - pointer.x,
       grabOffsetY: position.y - pointer.y,
       isDragging: false,
     };
-    this.#lift(hit.pile, hit.index);
+    this.#lift(hit.pile, hit.index, heldCards.length);
   }
 
-  /** Raises the cards from `index` up in a pile: slightly bigger, drawn on top. */
-  #lift(pile: number, fromIndex: number): void {
+  /**
+   * Picking up a run starts the real Freecell move straight away: its top
+   * cards go into the empty free cells, topmost first, one per cell. This
+   * is the same order `decomposeRunMove` uses, so when the run is dropped
+   * those steps are already done on screen and the rest carries on from
+   * there. Returns the parked cards; the board state is not changed until
+   * the move is played.
+   */
+  #parkInFreeCells(runCards: CardId[]): CardId[] {
+    const piles = this.#host.getPiles();
+    const emptyCells = FREE_CELL_PILES.filter((pile) => piles[pile].length === 0);
+    const parkCount = Math.min(runCards.length - 1, emptyCells.length);
+    const parked = runCards.slice(runCards.length - parkCount).toReversed();
+    const { scaleX, scaleY } = this.#cardScale();
+
+    parked.forEach((card, parkIndex) => {
+      const sprite = this.#sprites[card];
+      const slot = this.#layout.slots[emptyCells[parkIndex]];
+      this.tweens.killTweensOf(sprite);
+      sprite.setDepth(FLYING_DEPTH + parkIndex);
+      if (this.#reduceMotion) {
+        sprite.setPosition(slot.x, slot.y).setScale(scaleX, scaleY);
+        return;
+      }
+      this.tweens.add({
+        targets: sprite,
+        x: slot.x,
+        y: slot.y,
+        scaleX,
+        scaleY,
+        delay: parkIndex * STEP_INTERVAL_MS,
+        duration: STEP_DURATION_MS,
+        ease: 'Cubic.easeInOut',
+      });
+    });
+    return parked;
+  }
+
+  /** Raises `count` cards from `fromIndex` in a pile: slightly bigger, drawn on top. */
+  #lift(pile: number, fromIndex: number, count: number): void {
     const pileCards = this.#host.getPiles()[pile];
     const liftedScale = this.#cardScale(LIFT_SCALE);
     const offset = this.#liftOffset();
 
-    pileCards.slice(fromIndex).forEach((card, runOffset) => {
+    pileCards.slice(fromIndex, fromIndex + count).forEach((card, runOffset) => {
       const sprite = this.#sprites[card];
       const index = fromIndex + runOffset;
       const rest = cardPosition({ layout: this.#layout, pile, index, pileLength: pileCards.length });
@@ -538,7 +580,7 @@ export class BoardScene extends Phaser.Scene {
     // piles makes a drop that straddles two columns land where it can.
     const draggedRect = this.#draggedRect(pointer, drag);
     const [bestTarget] = Array.from({ length: PILE_COUNT }, (_, to) => ({
-      move: { from: drag.from, to, count: drag.cards.length },
+      move: { from: drag.from, to, count: drag.runCount },
       overlap: overlapArea(draggedRect, dropRect({ layout: this.#layout, pile: to })),
     }))
       .filter(({ move, overlap }) => overlap > 0 && this.#host.canDrop(move))
